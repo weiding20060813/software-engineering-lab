@@ -6,16 +6,12 @@
 
 ```
 game/
-├── index.html            # 入口页面（浏览器直接打开即可游玩）
 ├── src/
 │   ├── config.js         # 全局常量：计分/星级/经济/动画时长（唯一权威定义）
 │   ├── score.js          # 计分与星级（FR-06 / FR-07）
 │   ├── levels.js         # 30 关配置（FR-08，数据驱动）+ 配置校验（FR-05 异常处理）
 │   ├── board.js          # 核心玩法引擎：棋盘/交换/消除/连锁/特殊方块/死局洗牌（FR-01~FR-06）
-│   ├── storage.js        # 存档：损坏备份、版本迁移、写入失败、降级（FR-11、7.2）
-│   ├── audio.js          # 音效（Web Audio 合成 + 不可用时静默降级，FR-15）
-│   ├── ui.js             # 界面与渲染（Canvas 2D 棋盘 + DOM 面板，FR-12/FR-16）
-│   └── main.js           # 游戏状态机与页面导航
+│   └── storage.js        # 存档：损坏备份、版本迁移、写入失败、降级（FR-11、7.2）
 └── tests/
     ├── logic.test.mjs        # 自动化验证（63 项断言，覆盖 AC-01~AC-07/AC-11/AC-13/AC-14/AC-21~24 等）
     ├── sim-player.mjs        # 模拟玩家（贪心 / 休闲），供可通关性与难度验证使用
@@ -23,11 +19,13 @@ game/
     └── smoke.mjs             # 性能烟测（棋盘生成、交换结算耗时）
 ```
 
+> 以下文件属 **UI 层，尚未创建**（下一步工作）：`index.html`（入口页面）、`src/ui.js`（Canvas 2D 渲染与交互）、`src/main.js`（状态机与页面导航）、`src/audio.js`（Web Audio 音效）。
+
 ## 运行方式
 
-- **玩游戏**：双击 `game/index.html`（或任意静态服务器打开）——无需安装任何依赖。
 - **跑测试**：`cd game && node tests/logic.test.mjs`（Node ≥ 18）
 - **重跑难度校准**：`node tests/calibrate-levels.mjs`
+- **玩游戏**：UI 层完成后双击 `game/index.html` 即可（当前尚无入口页面）
 
 ## 核心实现要点（与需求文档的对应）
 
@@ -41,6 +39,7 @@ game/
 | FR-06 计分 | 逐次连锁计分 = 消除数 × 20 × min(1+0.5(n-1), 2.5)；测试可逐项复算 |
 | FR-07 星级 | R = 结算总分 / scoreTarget，≥1.0/1.3/1.6 → 1/2/3 星 |
 | FR-11 存档 | 单键 `stardust_save`，写临时键后覆盖（原子性）；损坏→备份到 `stardust_save_corrupt_<ts>` 并重置；配额耗尽→返回失败由 UI 提示；无痕/禁用→内存降级 |
+| FR-12/FR-15/FR-16 界面、音效、动画 | **待实现**（UI 层，见文末"待完成"）；常量中的动画时长约束已按 FR-16 预留 |
 
 ## 关卡难度校准（AC-11 证据）
 
