@@ -1,0 +1,10 @@
+{
+  "name": "stardust-match",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "《星尘消除》——轻量级益智消除类网页游戏（软件工程课程实验实现）",
+  "scripts": {
+    "test": "node tests/logic.test.mjs"
+  }
+}
