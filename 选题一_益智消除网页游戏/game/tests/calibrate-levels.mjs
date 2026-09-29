@@ -100,17 +100,18 @@ for (const lv of LEVELS) {
   const rng = mulberry32(9100 + lv.chapter * 100 + lv.index);
   const q = FAIL_RATE[lv.chapter];
 
-  // 消除型：先定目标色消除量
+  // 消除型：先定目标色消除量；同时用"打完所有步数"的无停止回合作为确定性的迭代起点
+  // （迭代起点必须与 levels.js 现值无关，否则校准结果不可复现）
+  const fullRuns = Array.from({ length: RUNS }, () => play(lv, rng, { style: 'greedy', stopScore: Infinity }));
+  const fullMedian = quantile(fullRuns.map((r) => r.score), 0.5);
   let objectiveTarget = null;
   if (lv.objectiveType === 'clear') {
-    const full = Array.from({ length: RUNS }, () => play(lv, rng, { style: 'greedy' }));
-    objectiveTarget = Math.max(10, Math.round(quantile(full.map((r) => r.color), 0.2) / 2) * 2);
+    objectiveTarget = Math.max(10, Math.round(quantile(fullRuns.map((r) => r.color), 0.2) / 2) * 2);
     objectiveTargets[lv.id] = objectiveTarget;
   }
 
-  // 不动点迭代求 1 星线
-  const stopScoreInit = lv.scoreTarget || 1000;
-  let target = stopScoreInit;
+  // 不动点迭代求 1 星线（起点固定为 0.6 × 可打完中位分）
+  let target = Math.max(200, Math.round((fullMedian * 0.6) / 10) * 10);
   let bonusPerStep = bonusPerStepFor(target, lv.moves);
   for (let k = 0; k < ITER; k++) {
     bonusPerStep = bonusPerStepFor(target, lv.moves);

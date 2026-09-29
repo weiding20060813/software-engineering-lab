@@ -19,12 +19,17 @@ export function finalScore(inLevelScore, movesLeft, won, bonusPerStep = 0) {
   return won ? inLevelScore + movesLeft * bonusPerStep : inLevelScore;
 }
 
-/** 星级：R = 结算总分 / scoreTarget，≥1.0/1.3/1.6 → 1/2/3 星；未过关 0 星 */
+/**
+ * 星级：R = 结算总分 / scoreTarget
+ * - 未过关 → 0 星（不得覆盖历史最好成绩）
+ * - 过关（达成目标）→ **至少 1 星**，R ≥ 1.3 → 2 星，R ≥ 1.6 → 3 星
+ *   （v1.2 修订：clear 型关卡"刚好达标"时的得分可能低于 scoreTarget，
+ *    若按下限 0 星会产生"达成目标却 0 星"的逻辑空洞）
+ */
 export function starsFor(totalScore, scoreTarget, won = true) {
   if (!won) return 0;
   const r = totalScore / scoreTarget;
   if (r >= STAR_THRESHOLDS[2]) return 3;
   if (r >= STAR_THRESHOLDS[1]) return 2;
-  if (r >= STAR_THRESHOLDS[0]) return 1;
-  return 0;
+  return 1;
 }

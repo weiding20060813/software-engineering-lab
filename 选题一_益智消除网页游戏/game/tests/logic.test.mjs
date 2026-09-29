@@ -199,13 +199,13 @@ section('FR-09  道具行为');
 section('AC-14  星级阈值（R = 结算总分 / scoreTarget）');
 {
   const T = 1000;
-  check('R=0.99 → 0 星', starsFor(990, T, true) === 0);
+  check('过关但分数低于基准 → 1 星（过关下限，v1.2 修订）', starsFor(990, T, true) === 1, `${starsFor(990, T, true)}`);
   check('R=1.00 → 1 星（边界）', starsFor(1000, T, true) === 1);
   check('R=1.29 → 1 星', starsFor(1290, T, true) === 1);
   check('R=1.30 → 2 星（边界）', starsFor(1300, T, true) === 2);
   check('R=1.59 → 2 星', starsFor(1590, T, true) === 2);
   check('R=1.60 → 3 星（边界）', starsFor(1600, T, true) === 3);
-  check('未过关一律 0 星', starsFor(9999, T, false) === 0);
+  check('未过关一律 0 星（即使分数高于基准）', starsFor(9999, T, false) === 0);
 }
 
 // ---------- 关卡配置校验 ----------
@@ -240,6 +240,7 @@ section('AC-11  30 关可通关性与星级可达性（模拟玩家）');
   const rows = [];
   let levelsPassedByGreedy = 0, greedyWins = 0, casualWins = 0;
   const starCount = { greedy: [0, 0, 0, 0], casual: [0, 0, 0, 0] };
+  const losses = { greedy: 0, casual: 0 };
 
   LEVELS.forEach((lv) => {
     const rng = mulberry32(5100 + lv.chapter * 100 + lv.index);
@@ -250,6 +251,8 @@ section('AC-11  30 关可通关性与星级可达性（模拟玩家）');
     if (gw > 0) levelsPassedByGreedy++;
     greedyWins += gw;
     casualWins += cw;
+    losses.greedy += RUNS - gw;
+    losses.casual += RUNS - cw;
     g.forEach((r) => starCount.greedy[r.stars]++);
     c.forEach((r) => starCount.casual[r.stars]++);
     rows.push({ id: lv.id, type: lv.objectiveType, target: lv.objectiveType === 'score' ? lv.scoreTarget : lv.objectiveTarget, gw, cw, RUNS });
@@ -269,6 +272,9 @@ section('AC-11  30 关可通关性与星级可达性（模拟玩家）');
   check('FR-07 三档星级在实战中均可达成（1/2/3 星各出现）',
     starCount.greedy[1] > 0 && starCount.greedy[2] > 0 && starCount.greedy[3] > 0,
     `贪心星级分布 1星${starCount.greedy[1]} 2星${starCount.greedy[2]} 3星${starCount.greedy[3]}`);
+  check('过关局星级下限为 1 星（0 星只出现在未过关局）',
+    starCount.greedy[0] === losses.greedy && starCount.casual[0] === losses.casual,
+    `贪心 0星${starCount.greedy[0]}=未过关${losses.greedy}；休闲 0星${starCount.casual[0]}=未过关${losses.casual}`);
   const threeStarShare = starCount.greedy[3] / Math.max(1, starCount.greedy[1] + starCount.greedy[2] + starCount.greedy[3]);
   check('3 星并非唾手可得（占通关局 < 40%）', threeStarShare < 0.4, `${(threeStarShare * 100).toFixed(0)}%`);
 }
