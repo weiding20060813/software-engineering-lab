@@ -22,6 +22,9 @@ let boardRef = null;
 let inputLocked = false;
 let keyboardMode = false;          // 仅在键盘操作后为 true：鼠标/触屏点选不显示键盘光标
 let hint = null;                   // 道具「提示」高亮的一对格子 {a, b, until}
+// 动画进行中：只刷新 HUD，不重绘棋盘（否则会把"结算后的终态"画出来，产生一帧闪烁）
+let suppressCanvas = false;
+export function setSuppressCanvas(v) { suppressCanvas = !!v; return { ok: true }; }
 let selection = null;
 let cursor = 0;
 let pointerStart = null;
@@ -210,8 +213,10 @@ function renderPlay(state) {
       : '点击或拖动交换相邻方块（键盘：方向键移动，空格选/换）';
   }
   if (dom.canvas) dom.canvas.classList.toggle('is-selecting', !!p.itemMode);
-  boardRef = p.board;
-  layoutAndDraw(p.board);
+  if (!suppressCanvas) {
+    boardRef = p.board;
+    layoutAndDraw(p.board);
+  }
 }
 
 /** 局内道具条：只渲染当前携带（最多 3 个）的道具，金币不足时置灰 */
@@ -409,6 +414,9 @@ export function playSequence(events, opts = {}) {
 
 function runOne(ev, speed) {
   if (!ev || !boardRef) return Promise.resolve();
+  // 事件可携带起始棋盘：交换阶段必须画"交换后、消除前"的棋盘，
+  // 否则会先画出结算终态、再跳回消除前 → 视觉上一帧闪烁
+  if (ev.board) boardRef = ev.board;
   switch (ev.type) {
     case 'swap':
       return animateTiles([ev.a, ev.b], 'swap', ANIM.swap / speed);

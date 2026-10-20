@@ -292,6 +292,48 @@ try {
     check('HUD 得分与状态一致', Number(String(after.hudScore).replace(/[^\d]/g, '')) === after.score, `HUD=${after.hudScore} state=${after.score}`);
   }
 
+  /* ---------- 3.4 动画首帧不得闪现"结算终态"（回归：第一次消除的闪烁） ---------- */
+  {
+    // 在页面内用 rAF 逐帧记录画布指纹：若动画早期就出现终态指纹，即判定为闪烁
+    const pair = await evaluate(`(() => {
+      const g = window.__game;
+      const mv = g.api.findLegalMoves(g.state.play.board);
+      return mv && mv.length ? mv[0] : null;
+    })()`);
+    if (!pair) {
+      check('能取到用于动画检查的合法交换', false);
+    } else {
+      const frames = await evaluate(`(async () => {
+        const cv = document.getElementById('play-board');
+        const ctx = cv.getContext('2d');
+        const hash = () => {
+          const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+          let h = 0;
+          for (let i = 0; i < d.length; i += 2048) h = (h * 33 + d[i]) >>> 0;
+          return h;
+        };
+        const rec = [];
+        let stop = false;
+        const tick = () => {
+          rec.push(hash());
+          if (!stop) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        await window.__game.api.onSwap(${pair[0]}, ${pair[1]});
+        await new Promise((r) => setTimeout(r, 260));
+        stop = true;
+        const finalHash = hash();
+        return { rec, finalHash };
+      })()`);
+      const { rec, finalHash } = frames;
+      const early = rec.slice(0, Math.max(1, Math.floor(rec.length * 0.5)));
+      const hitEarly = early.indexOf(finalHash) >= 0;
+      check('动画前半程不出现结算终态画面（无"闪一下"）', !hitEarly,
+        `${rec.length} 帧，其中前 ${early.length} 帧${hitEarly ? '出现' : '未出现'}终态`);
+      check('动画结束画面为结算终态', rec.length > 0 && rec[rec.length - 1] === finalHash);
+    }
+  }
+
   /* ---------- 3.5 选中框与键盘光标（回归：鼠标点选不应出现虚线/角落描边） ---------- */
   log('\n=== 3.5) 选中框与键盘光标 ===');
   {

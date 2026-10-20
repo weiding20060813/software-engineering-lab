@@ -344,9 +344,13 @@ export async function onSwap(a, b) {
   if (result.specialsCreated && result.specialsCreated.length) audio.play('special');
   else if (result.clearedTotal >= 5) audio.play('clear');
 
+  // 只刷新 HUD，暂不重绘棋盘：棋盘交给动画按「交换前 → 消除前 → 逐步结算」的节奏绘制，
+  // 否则会把结算终态先画出来，出现一帧闪烁
+  ui.setSuppressCanvas(true);
   renderAll();
+  ui.setSuppressCanvas(false);
   await ui.playSequence([
-    { type: 'swap', a, b },
+    { type: 'swap', a, b, board: mid },
     { type: 'combo', combo: result.combos.length },
     { type: 'cascade', before: mid, after: p.board, steps: result.steps },
   ]);
@@ -547,7 +551,10 @@ export async function onItemPick(index) {
     const ci = Number(c);
     p.clearedByColor[ci] = (p.clearedByColor[ci] || 0) + n;
   });
+  // 取消选格模式会触发 renderAll（会把结算终态画出来），动画前同样抑制画布重绘
+  ui.setSuppressCanvas(true);
   onItemModeChange('cancel');
+  ui.setSuppressCanvas(false);
   audio.play('special');
   log.info('item.pick', {
     type, index, price: item.price, cleared: res.cleared.length,
