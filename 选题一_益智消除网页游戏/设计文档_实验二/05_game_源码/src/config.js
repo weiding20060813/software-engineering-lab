@@ -31,15 +31,27 @@ export function coinsForClear(stars, firstClear) {
 
 // ===== FR-09 道具：6 个，随对应关卡「通关」解锁；使用消耗金币；每局最多携带 3 个 =====
 // kind：hint = 仅提示；shuffle = 立即重排；cell = 需选格后生效；instant = 立即生效
+// effectiveness：有效度评分（0~10），用于「价格越高 / 解锁越晚」的排序依据；
+// 评分口径见《变更说明_道具与金币经济_v2.md》第 4 节。
+// 规则：price 与 effectiveness 同步递增；unlock 按 effectiveness 升序排布（第一章 3 个、第二章 3 个）。
 export const ITEMS = [
-  { id: 'hint', name: '提示', price: 20, unlock: '1-1', kind: 'hint', desc: '高亮一个可用的交换，持续 3 秒' },
-  { id: 'shuffle', name: '洗牌', price: 40, unlock: '1-5', kind: 'shuffle', desc: '重新排列棋盘（不消耗步数）' },
-  { id: 'hammer', name: '锤子', price: 60, unlock: '1-10', kind: 'cell', desc: '消除任意一个方块（计入消除目标、不计分）' },
-  { id: 'bomb', name: '炸弹', price: 100, unlock: '2-1', kind: 'cell', desc: '消除所选方块周围 3×3 范围（不计分）' },
-  { id: 'color', name: '同色', price: 140, unlock: '2-5', kind: 'cell', desc: '消除棋盘上该颜色的全部方块（不计分）' },
-  { id: 'steps', name: '加五步', price: 120, unlock: '2-10', kind: 'instant', desc: '剩余步数 +5' },
+  { id: 'hint', name: '提示', price: 30, effectiveness: 3, unlock: '1-1', kind: 'hint', desc: '高亮一个可用的交换，持续 3 秒' },
+  { id: 'shuffle', name: '洗牌', price: 60, effectiveness: 4, unlock: '1-5', kind: 'shuffle', desc: '重新排列棋盘（不消耗步数）' },
+  { id: 'hammer', name: '锤子', price: 90, effectiveness: 5, unlock: '1-10', kind: 'cell', desc: '消除任意一个方块（计入消除目标、不计分）' },
+  { id: 'bomb', name: '炸弹', price: 130, effectiveness: 6, unlock: '2-1', kind: 'cell', desc: '消除所选方块周围 3×3 范围（不计分）' },
+  { id: 'color', name: '同色', price: 180, effectiveness: 7, unlock: '2-5', kind: 'cell', desc: '消除棋盘上该颜色的全部方块（不计分）' },
+  { id: 'steps', name: '加五步', price: 250, effectiveness: 9, unlock: '2-10', kind: 'instant', desc: '剩余步数 +5（直接影响过关判定）' },
 ];
 export const LOADOUT_MAX = 3;
+
+/** 价格与解锁顺序必须与有效度一致（领域层不变量，测试中会断言） */
+export function itemsAreOrdered(items = ITEMS) {
+  for (let i = 1; i < items.length; i++) {
+    if (items[i].effectiveness < items[i - 1].effectiveness) return false;
+    if (items[i].price < items[i - 1].price) return false;
+  }
+  return true;
+}
 
 export function itemById(id) {
   return ITEMS.find((it) => it.id === id) || null;

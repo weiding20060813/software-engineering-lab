@@ -392,6 +392,9 @@ try {
     check('能构造出无效交换对（用于 AC-04 验证）', false);
   }
 
+  // 道具单价从页面读取（避免把价格写死在测试里，调价后无需改测试）
+  const priceOf = (id) => evaluate(`window.__game.items.find((i) => i.id === '${id}').price`);
+
   // 4.2 道具库：6 个道具 / 解锁态 / 携带上限
   {
     await evaluate(`window.__game.api.navigate('items')`);
@@ -419,8 +422,9 @@ try {
     await shotClean('16_items_bar');
   }
 
-  // 4.4 锤子：确认 → 选格（不扣费）→ 点中才扣 60 → 动画结束
+  // 4.4 锤子：确认 → 选格（不扣费）→ 点中才扣费 → 动画结束
   {
+    const hammerPrice = await priceOf('hammer');
     const s0 = await hudState();
     await click('item-hammer');
     await waitFor(`!document.getElementById('modal').classList.contains('hidden')`, 4000, '锤子确认弹窗');
@@ -431,26 +435,28 @@ try {
     await evaluate(`window.__game.api.onItemPick(0)`);
     await sleep(900);
     const s1 = await hudState();
-    check('锤子选定后扣 60 金币', s1.coins === s0.coins - 60, `${s0.coins}→${s1.coins}`);
+    check('锤子选定后按标价扣费', s1.coins === s0.coins - hammerPrice, `${s0.coins}→${s1.coins}，标价 ${hammerPrice}`);
     check('锤子后退出选格模式', (await evaluate(`window.__game.state.itemMode`)) === null);
     check('锤子后无错误日志', !(await evaluate(`window.__game.log.get().some((l) => l.lv === 'error')`)));
   }
 
-  // 4.5 洗牌：确认 → 扣 40 → 棋盘变化 → 不扣步
+  // 4.5 洗牌：确认 → 扣费 → 棋盘变化 → 不扣步
   {
+    const shufflePrice = await priceOf('shuffle');
     const s0 = await hudState();
     await click('item-shuffle');
     await waitFor(`!document.getElementById('modal').classList.contains('hidden')`, 4000, '洗牌确认弹窗');
     await click('modal-ok');
     await sleep(900);
     const s1 = await hudState();
-    check('洗牌扣 40 金币', s1.coins === s0.coins - 40, `${s0.coins}→${s1.coins}`);
+    check('洗牌按标价扣费', s1.coins === s0.coins - shufflePrice, `${s0.coins}→${s1.coins}，标价 ${shufflePrice}`);
     check('洗牌不消耗步数', s1.moves === s0.moves);
     check('洗牌后棋盘发生变化', s1.board !== s0.board);
   }
 
-  // 4.6 提示：不扣费前先确认可用（提示无需确认，直接扣 20 并高亮）
+  // 4.6 提示：无需确认，直接扣费并高亮
   {
+    const hintPrice = await priceOf('hint');
     const countGold = () => evaluate(`(() => {
       const cv = document.getElementById('play-board');
       const ctx = cv.getContext('2d');
@@ -468,7 +474,7 @@ try {
     await sleep(300);
     const s1 = await hudState();
     const gold1 = await countGold();
-    check('提示扣 20 金币', s1.coins === s0.coins - 20, `${s0.coins}→${s1.coins}`);
+    check('提示按标价扣费', s1.coins === s0.coins - hintPrice, `${s0.coins}→${s1.coins}，标价 ${hintPrice}`);
     check('HUD 金币已同步刷新', s1.hudCoins === s1.coins, `HUD=${s1.hudCoins} state=${s1.coins}`);
     check('提示在棋盘上画出金色高亮框', gold1 > gold0 + 300, `金色像素 ${gold0}→${gold1}`);
     check('未提示时无提示色（基线接近 0）', gold0 < 500, `基线 ${gold0}`);

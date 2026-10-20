@@ -4,6 +4,7 @@ import * as logger from './logger.js';
 import * as log from './log.js';
 import * as board from './board.js';
 import * as ui from './ui.js';
+import { ITEMS, LOADOUT_MAX } from './config.js';
 
 /**
  * 安装调试设施并暴露只读状态/公开 API。
@@ -49,5 +50,7 @@ function exposeGame(main, loggerImpl) {
       panel: loggerImpl.togglePanel,
     },
     ui: ui.__internals,
+    items: ITEMS,
+    loadoutMax: LOADOUT_MAX,
   };
 }

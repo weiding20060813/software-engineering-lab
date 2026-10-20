@@ -8,7 +8,7 @@ import {
 import { LEVELS, levelById } from '../src/levels.js';
 import { defaultSave, normalizeSave, migrateSave } from '../src/storage.js';
 import {
-  COIN_BY_STARS, ITEMS, LOADOUT_MAX, coinsForClear, itemById, isItemUnlocked, sanitizeLoadout, unlockedItems,
+  COIN_BY_STARS, ITEMS, LOADOUT_MAX, coinsForClear, itemById, isItemUnlocked, sanitizeLoadout, unlockedItems, itemsAreOrdered,
 } from '../src/config.js';
 
 let pass = 0, fail = 0;
@@ -81,7 +81,9 @@ console.log('\n=== 道具：解锁、携带与价格（FR-09） ===');
   check('道具总数 6 个', ITEMS.length === 6, ITEMS.map((i) => i.id).join(','));
   check('解锁关卡：1-1 / 1-5 / 1-10 / 2-1 / 2-5 / 2-10',
     ITEMS.map((i) => i.unlock).join(',') === '1-1,1-5,1-10,2-1,2-5,2-10');
-  check('价格表：20/40/60/100/140/120', ITEMS.map((i) => i.price).join(',') === '20,40,60,100,140,120');
+  check('价格表：30/60/90/130/180/250', ITEMS.map((i) => i.price).join(',') === '30,60,90,130,180,250', ITEMS.map((i) => i.price).join(','));
+  check('有效度单调递增且与价格同序', itemsAreOrdered() === true);
+  check('解锁关卡顺序 = 有效度升序', ITEMS.slice().sort((a, b) => a.effectiveness - b.effectiveness).map((i) => i.id).join(',') === ITEMS.map((i) => i.id).join(','));
   check('全部道具都有效果描述', ITEMS.every((i) => typeof i.desc === 'string' && i.desc.length > 4));
   check('kind 分类合法（hint/shuffle/cell/instant）', ITEMS.every((i) => ['hint', 'shuffle', 'cell', 'instant'].includes(i.kind)));
 }
