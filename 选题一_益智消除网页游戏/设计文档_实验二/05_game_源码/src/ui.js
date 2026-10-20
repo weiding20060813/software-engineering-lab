@@ -676,7 +676,7 @@ function playCascadeStep(current, step, speed) {
   const dOut = Math.max(70, ANIM.clear / speed / 1.6);
   const dFall = Math.max(140, ANIM.fall / speed);
 
-  return animateTimed(dOut, (t) => {
+  const drawFade = (t) => {
     const tiles = [];
     for (let i = 0; i < current.cells.length; i++) {
       const cell = current.cells[i];
@@ -687,8 +687,11 @@ function playCascadeStep(current, step, speed) {
       else tiles.push({ cell, x: c, y: r });
     }
     renderFrame(tiles);
-  })
-    .then(() => animateSpecialEffects(current, Array.isArray(step.triggered) ? step.triggered : [], speed))
+  };
+  // 先播特殊方块特效（扫光/爆炸），再让本步所有被消除的方块**同时**淡出：
+  // "触发者"与"被触发后要消除的方块"是一次消失，而不是分两次（FR-04-4）
+  return animateSpecialEffects(current, Array.isArray(step.triggered) ? step.triggered : [], speed)
+    .then(() => animateTimed(dOut, drawFade))
     .then(() => animateTimed(dFall, (t) => {
     const e = easeOut(t);
     const tiles = [];

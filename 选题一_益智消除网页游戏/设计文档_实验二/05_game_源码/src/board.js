@@ -435,14 +435,21 @@ export function resolveSwap(board, a, b, rng = defaultRng) {
     queue = [];
     groups.forEach((g) => g.cells.forEach((x) => toClear.add(x)));
 
-    // 触发被消除的特殊方块（连锁爆炸）
+    // 触发被消除的特殊方块：效果格**并入本次消除**，并递归展开被波及的特殊方块
+    // （FR-04-4：触发者与被触发者必须同一批消失，而不是分成两次消除）
     const triggered = [];
-    for (const i of [...toClear]) {
+    const expanded = new Set();
+    const pending = [...toClear];
+    while (pending.length) {
+      const i = pending.pop();
       const cell = board.cells[i];
-      if (cell && cell.special) {
-        triggered.push({ index: i, special: cell.special });
-        for (const j of specialEffectCells(board, i, cell)) {
-          if (board.cells[j] && !toClear.has(j) && !clearedEver.has(j)) queue.push(j);
+      if (!cell || !cell.special || expanded.has(i) || clearedEver.has(i)) continue;
+      expanded.add(i);
+      triggered.push({ index: i, special: cell.special });
+      for (const j of specialEffectCells(board, i, cell)) {
+        if (board.cells[j] && !toClear.has(j) && !clearedEver.has(j)) {
+          toClear.add(j);
+          pending.push(j);       // 被波及的格子里若有特殊方块，在同一批里继续展开
         }
       }
     }

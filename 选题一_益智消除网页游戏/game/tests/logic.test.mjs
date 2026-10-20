@@ -206,11 +206,11 @@ section('FR-09  道具行为');
 // ---------- FR-04 特殊方块：构造式验证（触发与"多特殊方块"顺序） ----------
 section('FR-04  特殊方块触发：条纹清行/清列、组合顺序');
 {
-  // 构造一个"无预置连线"的确定性棋盘：按 (2r+c) 取色，横竖都不会出现 3 连
+  // 构造一个"无预置连线"的确定性棋盘：色 = (r + 2c) % colors，横竖都不会出现 3 连
   const buildPlain = (rows = 7, cols = 7, colors = 4) => {
-    const b = createBoard({ rows, cols, colors }, () => 0.5);
+    const b = createBoard({ rows, cols, colors }, Math.random);
     for (let r = 0; r < rows; r++) {
-      for (let cc = 0; cc < cols; cc++) b.cells[idx(b, r, cc)] = { color: (r * 2 + cc) % colors, special: null };
+      for (let cc = 0; cc < cols; cc++) b.cells[idx(b, r, cc)] = { color: (r + 2 * cc) % colors, special: null };
     }
     return b;
   };
@@ -225,6 +225,12 @@ section('FR-04  特殊方块触发：条纹清行/清列、组合顺序');
   check('横向条纹参与三连后触发', r1.valid && r1.combos.some((x) => (x.triggered || []).length > 0),
     JSON.stringify(r1.combos.map((x) => x.triggered)));
   check('横向条纹清掉整行（消除数 ≥ 行宽 7）', r1.clearedTotal >= 7, `cleared=${r1.clearedTotal}`);
+  check('触发者与被触发的效果格在**同一批**消除', (() => {
+    const s0 = r1.steps[0];
+    const rowAll = [0, 1, 2, 3, 4, 5, 6].every((cc) => s0.cleared.includes(idx(b1, 3, cc)));
+    const triggerIncluded = s0.cleared.includes(idx(b1, 3, 2));
+    return s0.cleared.length >= 7 && rowAll && triggerIncluded;
+  })(), JSON.stringify(r1.steps[0].cleared.slice().sort((x, y) => x - y)));
   check('步骤数据携带 triggered，供动画播放特效',
     r1.steps.some((s) => Array.isArray(s.triggered) && s.triggered.length > 0));
 
