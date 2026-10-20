@@ -236,6 +236,35 @@ try {
   })()`);
   check('选关页只渲染当前章节（10 关）', ch2.count === 10, `实际 ${ch2.count} 关: ${ch2.cells.join(',')}`);
   check('默认定位到进度所在章节（第 2 章）', /第\s*2\s*章/.test(ch2.active) && ch2.cells[0] === '2-1');
+  const chHead2 = await evaluate(`(() => ({
+    kicker: document.getElementById('levels-chapter-kicker').textContent,
+    name: document.getElementById('levels-chapter-name').textContent,
+    progress: document.getElementById('levels-chapter-progress').textContent,
+  }))()`);
+  check('章节头显示第 2 章名称与进度',
+    chHead2.kicker.includes('第 2 章') && chHead2.name === '星辉海滩' && /5\s*\/\s*10 关/.test(chHead2.progress),
+    `${chHead2.kicker} / ${chHead2.name} / ${chHead2.progress}`);
+  const card26 = await evaluate(`(() => {
+    const cell = [...document.querySelectorAll('#levels-grid .level-cell')].find(b => b.querySelector('.lv-id').textContent === '2-6');
+    const chip = cell && cell.querySelector('.lv-obj .target-chip');
+    return {
+      text: cell ? cell.querySelector('.lv-obj').textContent.replace(/\\s+/g, ' ').trim() : '',
+      aria: cell ? cell.getAttribute('aria-label') || '' : '',
+      chip: !!chip,
+      fill: chip && chip.querySelector('svg *') ? chip.querySelector('svg *').getAttribute('fill') : '',
+      current: !!(cell && cell.classList.contains('is-current')),
+    };
+  })()`);
+  check('消除型关卡卡显示目标颜色+形状', card26.chip && /红圆/.test(card26.text) && /36/.test(card26.text),
+    `${card26.text} / chip=${card26.chip} / fill=${card26.fill}`);
+  check('关卡卡无障碍名称包含目标色', /目标/.test(card26.aria) && /红圆/.test(card26.aria), card26.aria);
+  check('目标色 chip 使用该关目标色', card26.fill === '#ff6b81', card26.fill);
+  check('当前进度关卡高亮', card26.current === true, String(card26.current));
+  const locked27 = await evaluate(`(() => {
+    const cell = [...document.querySelectorAll('#levels-grid .level-cell')].find(b => b.querySelector('.lv-id').textContent === '2-7');
+    return { disabled: !!(cell && cell.disabled), lock: !!(cell && cell.querySelector('.lv-lock')) };
+  })()`);
+  check('锁定关卡有锁标记且不可点', locked27.disabled && locked27.lock, JSON.stringify(locked27));
   await shot('02_levels_ch2');
 
   await evaluate(`[...document.querySelectorAll('#levels-tabs .tab')][0].click()`);
@@ -245,6 +274,16 @@ try {
     return { cells, count: cells.length };
   })()`);
   check('切到第 1 章后只显示 1-1~1-10', ch1.count === 10 && ch1.cells[0] === '1-1' && ch1.cells[9] === '1-10', ch1.cells.join(','));
+  const chHead1 = await evaluate(`(() => ({
+    kicker: document.getElementById('levels-chapter-kicker').textContent,
+    name: document.getElementById('levels-chapter-name').textContent,
+  }))()`);
+  check('切章后章节头同步', chHead1.kicker.includes('第 1 章') && chHead1.name === '晨光草坪', `${chHead1.kicker} / ${chHead1.name}`);
+  const bestText = await evaluate(`(() => {
+    const first = document.querySelector('#levels-grid .level-cell .lv-best');
+    return first ? first.textContent : '';
+  })()`);
+  check('关卡卡显示历史最佳分', /16400/.test(bestText), bestText);
   const starText = await evaluate(`(() => {
     const first = document.querySelector('#levels-grid .level-cell .lv-stars');
     return first ? first.textContent : '';
@@ -252,10 +291,50 @@ try {
   check('星级为 3 槽位填空式（1-1 应为 ★★★ 或 ★★☆ 等 3 字符）', [...starText].length === 3, `"${starText}"`);
   await shot('03_levels_ch1');
 
+  /* ---------- 2.5 消除型关卡：目标色在 HUD / 结算中可读 ---------- */
+  log('\n=== 2.5) 消除型关卡目标色 ===');
+  await evaluate(`window.__game.api.startLevel('2-6')`);
+  await waitFor(`window.__game.state.page === 'play'`);
+  const targetHud = await evaluate(`(() => {
+    const chip = document.getElementById('play-target-chip');
+    return {
+      label: document.getElementById('play-target-label').textContent,
+      target: document.getElementById('play-target').textContent,
+      chipText: chip ? chip.textContent.replace(/\\s+/g, ' ').trim() : '',
+      hidden: !chip || chip.classList.contains('hidden'),
+      hasSvg: !!(chip && chip.querySelector('svg')),
+      fill: chip && chip.querySelector('svg *') ? chip.querySelector('svg *').getAttribute('fill') : '',
+    };
+  })()`);
+  check('消除型 HUD 显示目标色+形状', targetHud.label === '目标色' && !targetHud.hidden && /红圆/.test(targetHud.chipText) && targetHud.hasSvg,
+    JSON.stringify(targetHud));
+  check('消除型 HUD 目标进度为 0 / 36', /0\s*\/\s*36/.test(targetHud.target), targetHud.target);
+  check('HUD 目标色 chip 使用该关目标色', targetHud.fill === '#ff6b81', targetHud.fill);
+  await sleep(250);
+  await shot('03c_clear_target');
+
+  await evaluate(`window.__game.api.onSettle(true)`);
+  await waitFor(`window.__game.state.page === 'result'`);
+  const clearResult = await evaluate(`document.getElementById('result-sub').textContent.replace(/\\s+/g, ' ').trim()`);
+  check('消除型结算文案显示目标色而非目标分', /目标色/.test(clearResult) && /红圆/.test(clearResult) && /36/.test(clearResult),
+    clearResult);
+  await sleep(250);
+  await shot('03d_clear_result');
+  await evaluate(`(() => {
+    const s = window.__game.state.save;
+    // 本段只验证目标色展示；恢复 2-6 的“未通关”状态，避免影响后面首通双倍用例
+    delete s.stars['2-6'];
+    delete s.bestScores['2-6'];
+  })()`);
+  await evaluate(`window.__game.api.navigate('levels')`);
+  await sleep(200);
+
   /* ---------- 3. 局内：交换与动画 ---------- */
   log('\n=== 3) 局内交换与动画 ===');
   await evaluate(`window.__game.api.startLevel('2-3')`);
   await waitFor(`window.__game.state.page === 'play'`);
+  const targetChipHidden = await evaluate(`document.getElementById('play-target-chip').classList.contains('hidden')`);
+  check('计分型关卡不显示目标色 chip', targetChipHidden === true, String(targetChipHidden));
   const hud0 = await evaluate(`(() => ({
     moves: document.getElementById('play-moves').textContent,
     score: document.getElementById('play-score').textContent,

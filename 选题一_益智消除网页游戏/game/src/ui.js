@@ -7,6 +7,7 @@
 
 import { ANIM } from './config.js';
 import { SP, idx, rowOf, colOf } from './board.js';
+import { CHAPTERS } from './levels.js';
 import * as log from './log.js';
 
 const CELL_COLORS = ['#ff6b81', '#ffc857', '#4ad9a4', '#4cc9f0', '#7c6cff', '#f072d8'];
@@ -92,8 +93,11 @@ function collect(root) {
     homeStatus: q('home-status'),
     levelsBack: q('levels-back'), levelsTabs: q('levels-tabs'), levelsGrid: q('levels-grid'),
     levelsTotalStars: q('levels-total-stars'), levelsItems: q('levels-items'),
+    levelsChapterKicker: q('levels-chapter-kicker'), levelsChapterName: q('levels-chapter-name'),
+    levelsChapterProgress: q('levels-chapter-progress'),
     playBack: q('play-back'), playLevelName: q('play-level-name'), playMoves: q('play-moves'),
-    playTarget: q('play-target'), playTargetLabel: q('play-target-label'), playScore: q('play-score'),
+    playTarget: q('play-target'), playTargetLabel: q('play-target-label'),
+    playTargetChip: q('play-target-chip'), playScore: q('play-score'),
     playCoins: q('play-coins'), playTip: q('play-tip'), playCombo: q('play-combo'),
     canvas: q('play-board'), items: q('play-items'), playItemsEmpty: q('play-items-empty'),
     itemsBack: q('items-back'), itemsList: q('items-list'), itemsCoins: q('items-coins'),
@@ -151,7 +155,20 @@ function renderHome(state) {
 function renderLevels(state) {
   const list = state.levels.list || [];
   const chapter = state.levels.chapter || 1;
-  if (dom.levelsTotalStars) dom.levelsTotalStars.textContent = '★ ' + countStars(state.save);
+  const save = state.save || { stars: {}, unlockedLevelId: '1-1', bestScores: {} };
+  const chapterLevels = list.filter((lv) => (lv.chapter || 1) === chapter);
+  const chapterStars = chapterLevels.reduce((n, lv) => n + Math.max(0, Math.min(3, (save.stars || {})[lv.id] || 0)), 0);
+  const chapterPassed = chapterLevels.filter((lv) => ((save.stars || {})[lv.id] || 0) > 0).length;
+  const chapterCfg = CHAPTERS.find((c) => c.chapter === chapter) || CHAPTERS[0];
+  const totalStars = countStars(save);
+
+  if (dom.levelsTotalStars) dom.levelsTotalStars.textContent = '★ ' + totalStars;
+  if (dom.levelsChapterKicker) dom.levelsChapterKicker.textContent = `第 ${chapter} 章`;
+  if (dom.levelsChapterName) dom.levelsChapterName.textContent = chapterCfg ? chapterCfg.name : '';
+  if (dom.levelsChapterProgress) {
+    dom.levelsChapterProgress.textContent = `${chapterPassed} / ${chapterLevels.length} 关 · ${chapterStars} / ${chapterLevels.length * 3} ★`;
+  }
+
   if (dom.levelsTabs && dom.levelsTabs.dataset.built !== '1') {
     dom.levelsTabs.innerHTML = '';
     for (let c = 1; c <= 3; c++) {
@@ -170,21 +187,31 @@ function renderLevels(state) {
     });
   }
   if (!dom.levelsGrid) return;
-  const save = state.save || { stars: {}, unlockedLevelId: '1-1' };
   const broken = state.levels.broken || [];
   dom.levelsGrid.innerHTML = '';
   // 按章节过滤：只渲染当前章节的 10 关（FR-12，选关页分章展示）
-  list.filter((lv) => (lv.chapter || 1) === chapter).forEach((lv) => {
+  chapterLevels.forEach((lv) => {
     const btn = document.createElement('button');
     const unlocked = isUnlocked(save, lv.id);
-    btn.className = 'level-cell' + (broken.includes(lv.id) ? ' is-broken' : '');
-    btn.disabled = !unlocked || broken.includes(lv.id);
     const stars = Math.max(0, Math.min(3, save.stars ? (save.stars[lv.id] || 0) : 0));
+    const best = Number((save.bestScores || {})[lv.id] || 0);
+    const isCurrent = save.unlockedLevelId === lv.id;
     // 星级固定 3 个槽位：实心为已获得，空心为未获得（1 星 → ★☆☆）
     const starText = '★'.repeat(stars) + '☆'.repeat(3 - stars);
+    btn.className = 'level-cell' + (broken.includes(lv.id) ? ' is-broken' : '') + (isCurrent ? ' is-current' : '');
+    btn.disabled = !unlocked || broken.includes(lv.id);
+    const target = targetInfo(lv);
+    const aria = [`第 ${lv.id} 关`];
+    if (target) aria.push(`目标 ${target.colorName}${target.shapeName} ${lv.objectiveTarget} 个`);
+    else aria.push(`目标 ${lv.scoreTarget} 分`);
+    if (best > 0) aria.push(`最佳 ${best} 分`);
+    if (!unlocked) aria.push('未解锁');
+    btn.setAttribute('aria-label', aria.join('，'));
     btn.innerHTML = `<span class="lv-id">${lv.id}</span>`
       + `<span class="lv-stars">${starText}</span>`
-      + `<span class="lv-obj">${objectiveText(lv)}</span>`;
+      + `<span class="lv-obj">${objectiveHtml(lv)}</span>`
+      + (best > 0 ? `<span class="lv-best">最佳 ${best}</span>` : '')
+      + (!unlocked ? '<span class="lv-lock" aria-hidden="true">🔒</span>' : '');
     if (unlocked && !broken.includes(lv.id)) btn.addEventListener('click', () => emit('onStartLevel', lv.id));
     dom.levelsGrid.appendChild(btn);
   });
@@ -201,6 +228,14 @@ function renderPlay(state) {
   if (dom.playScore) dom.playScore.textContent = String(p.inLevelScore);
   if (dom.playCoins) dom.playCoins.textContent = String(state.save.coins);
   if (dom.playTarget) dom.playTarget.textContent = p.targetLabel;
+  const target = targetInfo(p.level);
+  if (dom.playTargetChip) {
+    dom.playTargetChip.innerHTML = target
+      ? `${shapeSvg(target.shape, target.color)}<span class="target-chip-text">${target.colorName}${target.shapeName}</span>`
+      : '';
+    dom.playTargetChip.classList.toggle('hidden', !target);
+    dom.playTargetChip.setAttribute('aria-label', target ? `目标颜色：${target.colorName}${target.shapeName}` : '');
+  }
   if (dom.playTargetLabel) dom.playTargetLabel.textContent = p.level.objectiveType === 'clear' ? '目标色' : '目标分';
   renderItemsBar(state);
   const modeItem = p.itemMode ? (state.itemsList || []).find((it) => it.id === p.itemMode) : null;
@@ -286,11 +321,16 @@ function renderResult(state) {
   if (dom.resultScore) dom.resultScore.textContent = String(r.total);
   if (dom.resultSub) {
     const parts = [];
-    if (r.won) parts.push(`本关目标 ${r.level.scoreTarget} 分`);
+    if (r.won) {
+      const target = targetInfo(r.level);
+      parts.push(target
+        ? `目标色 ${targetChipHtml(r.level)} ${r.level.objectiveTarget} 个`
+        : `本关目标 ${r.level.scoreTarget} 分`);
+    }
     if (r.coinsGained) parts.push(`金币 +${r.coinsGained}${r.firstClear ? '（首次通关双倍）' : ''}`);
     if (r.isNewBest) parts.push('新纪录！');
     if (!r.won && r.coinsGained === 0) parts.push('未通关无金币奖励');
-    dom.resultSub.textContent = parts.join('　·　');
+    dom.resultSub.innerHTML = parts.join('　·　');
   }
   if (dom.resultNext) {
     dom.resultNext.disabled = !r.canNext;
@@ -978,9 +1018,50 @@ function countStars(save) {
   return Object.values(save.stars).reduce((a, b) => a + (Number(b) || 0), 0);
 }
 
-function objectiveText(lv) {
-  if (lv.objectiveType === 'clear') return `消除 ${lv.objectiveTarget} 个`;
-  return `${lv.scoreTarget} 分`;
+function objectiveHtml(lv) {
+  if (lv.objectiveType === 'clear') {
+    return `${targetChipHtml(lv)}<span class="lv-obj-text">${lv.objectiveTarget} 个</span>`;
+  }
+  return `<span class="lv-obj-text">${lv.scoreTarget} 分</span>`;
+}
+
+/* ---------- 目标颜色双编码（颜色 + 形状） ---------- */
+const COLOR_NAMES = ['红', '黄', '绿', '蓝', '紫', '粉'];
+const SHAPE_NAMES = ['圆', '方', '三角', '菱形', '五边形', '六边形'];
+
+function targetInfo(level) {
+  if (!level || level.objectiveType !== 'clear') return null;
+  const raw = Number(level.targetColor);
+  if (!Number.isInteger(raw) || raw < 0) return null;
+  const index = raw % CELL_COLORS.length;
+  return {
+    index,
+    color: CELL_COLORS[index],
+    colorName: COLOR_NAMES[index] || `色${index + 1}`,
+    shape: index % SHAPE_COUNT,
+    shapeName: SHAPE_NAMES[index % SHAPE_COUNT] || '形状',
+  };
+}
+
+function targetChipHtml(level, opts = {}) {
+  const t = targetInfo(level);
+  if (!t) return '';
+  const label = `${t.colorName}${t.shapeName}`;
+  const text = opts.text === false ? '' : `<span class="target-chip-text">${label}</span>`;
+  return `<span class="target-chip" role="img" title="目标：${label}" aria-label="目标：${label}">${shapeSvg(t.shape, t.color)}${text}</span>`;
+}
+
+function shapeSvg(shape, color) {
+  const stroke = ' stroke="rgba(255,255,255,0.75)" stroke-width="1"';
+  const shapes = [
+    `<circle cx="8" cy="8" r="6.4" fill="${color}"${stroke}/>`,
+    `<rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.6" fill="${color}"${stroke}/>`,
+    `<polygon points="8,1.4 14.9,13.9 1.1,13.9" fill="${color}"${stroke}/>`,
+    `<polygon points="8,1 15,8 8,15 1,8" fill="${color}"${stroke}/>`,
+    `<polygon points="8,1 14.7,5.9 12.2,14 3.8,14 1.3,5.9" fill="${color}"${stroke}/>`,
+    `<polygon points="8,1 13.7,4.3 13.7,11.7 8,15 2.3,11.7 2.3,4.3" fill="${color}"${stroke}/>`,
+  ];
+  return `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">${shapes[shape] || shapes[0]}</svg>`;
 }
 
 function isUnlocked(save, levelId) {
@@ -1000,7 +1081,7 @@ function escapeHtml(s) {
 }
 
 export const __internals = {
-  drawBoard, layoutAndDraw, CELL_COLORS, GUIDE_TEXT, showHint, clearHint,
+  drawBoard, layoutAndDraw, CELL_COLORS, GUIDE_TEXT, showHint, clearHint, targetInfo,
   /** 仅测试版使用：暴露渲染/输入状态，便于端到端断言 */
   getDebugFlags: () => ({ keyboardMode, cellSize, selection, cursor, inputLocked }),
 };
