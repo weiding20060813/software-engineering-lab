@@ -392,6 +392,185 @@ try {
     check('再次点选后退出键盘光标模式', (await evaluate(`window.__game.ui.getDebugFlags()`)).keyboardMode === false);
   }
 
+  /* ---------- 3.6 特殊方块触发特效（回归：条纹/炸弹/彩虹必须有明显视觉反馈） ---------- */
+  {
+    const res = await evaluate(`(async () => {
+      const g = window.__game;
+      const p = g.state.play;
+      const moves = g.api.findLegalMoves(p.board);
+      // 1) 找一个能合成特殊方块的交换
+      // 1) 找一步合法交换，并在"交换后"的棋盘上定位一个匹配组
+      let plan = null;
+      for (const mv of moves) {
+        const probeBoard = g.api.cloneBoard(p.board);
+        const t = probeBoard.cells[mv[0]]; probeBoard.cells[mv[0]] = probeBoard.cells[mv[1]]; probeBoard.cells[mv[1]] = t;
+        const groups = g.api.findMatches(probeBoard);
+        const hit = groups.find((gr) => gr.cells.length >= 3);
+        if (hit) { plan = { mv, cell: hit.cells[0] }; break; }
+      }
+      if (!plan) return { error: 'no-plan', moves: moves.length };
+      // 2) 在该格植入横向条纹（只改 special，不改颜色 → 不会产生预置连线）
+      const planted = p.board.cells[plan.cell];
+      if (!planted) return { error: 'no-cell' };
+      const expectedRow = Math.floor(plan.cell / p.board.cols);
+      p.board.cells[plan.cell] = { color: planted.color, special: 'stripeH' };
+      g.ui.drawBoard(p.board, {});
+      const fireMove = plan.mv;
+      const kind = 'stripeH';
+      const idx = plan.cell;
+      // 4) 逐帧统计每行平均亮度：触发瞬间若有扫光，整行亮度会明显上升
+      const cv = document.getElementById('play-board');
+      const ctx = cv.getContext('2d');
+      const rows = p.board.rows;
+      // 扫光是纯白（RGB 三通道都极高），方块本身的颜色/描边达不到 → 用"近白像素数"作为特征
+      const rowWhite = () => {
+        const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+        const out = [];
+        const cellH = cv.height / rows;
+        for (let r2 = 0; r2 < rows; r2++) {
+          let n = 0;
+          const y0 = Math.floor(r2 * cellH), y1 = Math.floor((r2 + 1) * cellH);
+          for (let y = y0; y < y1; y += 2) {
+            for (let x = 0; x < cv.width; x += 2) {
+              const i = (y * cv.width + x) * 4;
+              if (d[i] > 235 && d[i + 1] > 235 && d[i + 2] > 235) n++;
+            }
+          }
+          out.push(n);
+        }
+        return out;
+      };
+      const base = rowWhite();
+      const frames = [];
+      let stop = false;
+      const tick = () => { frames.push(rowWhite()); if (!stop) requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+      await g.api.onSwap(fireMove[0], fireMove[1]);
+      await new Promise((r) => setTimeout(r, 150));
+      stop = true;
+      let best = { row: -1, count: 0, gain: 0 };
+      for (const fr of frames) {
+        for (let r2 = 0; r2 < rows; r2++) {
+          const gain = fr[r2] - base[r2];
+          if (gain > best.gain) best = { row: r2, count: fr[r2], gain };
+        }
+      }
+      const after = p.board.cells[idx];
+      const consumed = !after || after.special !== 'stripeH';
+      return { kind, idx, expectedRow, frames: frames.length, best, baseWhite: base[expectedRow], consumed };
+    })()`);
+    check('能构造并触发特殊方块', !res.error, JSON.stringify(res.error || { kind: res.kind, idx: res.idx }));
+    if (!res.error) {
+      check('特殊方块被真正消耗（触发成功）', res.consumed === true, `idx=${res.idx}`);
+      check('触发过程有动画帧', res.frames > 5, `${res.frames} 帧`);
+
+      // 确定性像素断言：把四种特效各固定在 t=0.5 渲染一帧再测，避免帧率/时序抖动
+      const px = await evaluate(`(() => {
+        const g = window.__game;
+        const ui = g.ui;
+        const b = g.state.play.board;
+        const cv = document.getElementById('play-board');
+        const ctx = cv.getContext('2d');
+        const rows = b.rows, cols = b.cols;
+        const idx = 3 * cols + 3;
+        const cellW = cv.width / cols;
+        const cellH = cv.height / rows;
+        const read = () => ctx.getImageData(0, 0, cv.width, cv.height).data;
+        const isWhite = (d, p) => d[p * 4] > 235 && d[p * 4 + 1] > 235 && d[p * 4 + 2] > 235;
+        const whiteInRow = (d, r) => {
+          let n = 0;
+          const y0 = Math.floor(r * cellH), y1 = Math.floor((r + 1) * cellH);
+          for (let y = y0; y < y1; y += 2) for (let x = 0; x < cv.width; x += 2) if (isWhite(d, y * cv.width + x)) n++;
+          return n;
+        };
+        const whiteInCol = (d, c2) => {
+          let n = 0;
+          const x0 = Math.floor(c2 * cellW), x1 = Math.floor((c2 + 1) * cellW);
+          for (let x = x0; x < x1; x += 2) for (let y = 0; y < cv.height; y += 2) if (isWhite(d, y * cv.width + x)) n++;
+          return n;
+        };
+        const meanBright = (d, r0, c0, span) => {
+          let sum = 0, n = 0;
+          const y0 = span ? Math.floor((r0 - span) * cellH) : 0;
+          const y1 = span ? Math.floor((r0 + span + 1) * cellH) : cv.height;
+          const x0 = span ? Math.floor((c0 - span) * cellW) : 0;
+          const x1 = span ? Math.floor((c0 + span + 1) * cellW) : cv.width;
+          for (let y = Math.max(0, y0); y < Math.min(cv.height, y1); y += 2) {
+            for (let x = Math.max(0, x0); x < Math.min(cv.width, x1); x += 2) {
+              const p = (y * cv.width + x) * 4;
+              sum += (d[p] + d[p + 1] + d[p + 2]) / 3; n++;
+            }
+          }
+          return n ? sum / n : 0;
+        };
+        ui.drawBoard(b, {});
+        const base = read();
+        const out = { baseRow: whiteInRow(base, 3), baseCol: whiteInCol(base, 3), baseBomb: meanBright(base, 3, 3, 1), baseAll: meanBright(base, 0, 0, 0) };
+        ui.drawSpecialPreview('stripeH', idx, 0.5);
+        const dH = read();
+        out.rowH = whiteInRow(dH, 3); out.rowOther = whiteInRow(dH, 0);
+        ui.drawSpecialPreview('stripeV', idx, 0.5);
+        const dV = read();
+        out.colV = whiteInCol(dV, 3); out.colOther = whiteInCol(dV, 0);
+        ui.drawSpecialPreview('bomb', idx, 0.4);
+        out.bomb = meanBright(read(), 3, 3, 1);
+        ui.drawSpecialPreview('rainbow', idx, 0.5);
+        out.rainAll = meanBright(read(), 0, 0, 0);
+        ui.drawBoard(b, {});
+        return out;
+      })()`);
+      check('横向条纹：扫光沿整行铺开（近白像素激增，且集中在目标行）',
+        px.rowH > 3000 && px.rowOther < px.rowH * 0.25,
+        `目标行 ${px.rowH} / 其它行 ${px.rowOther}（基线 ${px.baseRow}）`);
+      check('纵向条纹：扫光沿整列铺开',
+        px.colV > 3000 && px.colOther < px.colV * 0.25,
+        `目标列 ${px.colV} / 其它列 ${px.colOther}（基线 ${px.baseCol}）`);
+      check('炸弹：中心区域亮度明显上升',
+        px.bomb > px.baseBomb + 15,
+        `${px.baseBomb.toFixed(1)} → ${px.bomb.toFixed(1)}`);
+      check('彩虹：全盘亮度上升（闪光）',
+        px.rainAll > px.baseAll + 10,
+        `${px.baseAll.toFixed(1)} → ${px.rainAll.toFixed(1)}`);
+    }
+
+    // 单独渲染一次特效用于留档截图（不跑整段动画）
+    const preview = await evaluate(`(() => {
+      const g = window.__game;
+      const ui = g.ui;
+      const b = g.state.play.board;
+      if (!ui || !ui.animateSpecialTrigger) return false;
+      ui.animateSpecialTrigger(b, { index: 0, special: 'stripeH' }, 900);
+      return true;
+    })()`);
+    if (preview) {
+      await sleep(220);
+      await shotClean('19_special_stripe');
+      await sleep(900);
+    }
+    // 四种特效都能正常渲染（画面确实发生变化）
+    for (const kind of ['stripeH', 'stripeV', 'bomb', 'rainbow']) {
+      const r = await evaluate(`(async () => {
+        const g = window.__game;
+        const b = g.state.play.board;
+        const cv = document.getElementById('play-board');
+        const ctx = cv.getContext('2d');
+        const hash = () => {
+          const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+          let h = 0;
+          for (let i = 0; i < d.length; i += 4096) h = (h * 31 + d[i]) >>> 0;
+          return h;
+        };
+        g.ui.drawBoard(b, {});
+        const before = hash();
+        const p = g.ui.animateSpecialTrigger(b, { index: 12, special: '${kind}' }, 200);
+        await new Promise((res) => setTimeout(res, 90));
+        const during = hash();
+        await p;
+        return { changed: during !== before };
+      })()`);
+      check(`特效可渲染：${kind}`, r.changed === true);
+    }
+  }
   /* ---------- 4. 交互流程：无效交换 / 道具 / 结算 / 排行 / 设置 / 引导 ---------- */
   log('\n=== 4) 交互流程 ===');
   const hudState = () => evaluate(`(() => {

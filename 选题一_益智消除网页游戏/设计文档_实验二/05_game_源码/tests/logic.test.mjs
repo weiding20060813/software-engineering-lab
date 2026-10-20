@@ -203,6 +203,60 @@ section('FR-09  道具行为');
   check('首次通关双倍：3 星 = 80，重复通关 = 40', coinsForClear(3, true) === 80 && coinsForClear(3, false) === 40);
 }
 
+// ---------- FR-04 特殊方块：构造式验证（触发与"多特殊方块"顺序） ----------
+section('FR-04  特殊方块触发：条纹清行/清列、组合顺序');
+{
+  // 构造一个"无预置连线"的确定性棋盘：按 (2r+c) 取色，横竖都不会出现 3 连
+  const buildPlain = (rows = 7, cols = 7, colors = 4) => {
+    const b = createBoard({ rows, cols, colors }, () => 0.5);
+    for (let r = 0; r < rows; r++) {
+      for (let cc = 0; cc < cols; cc++) b.cells[idx(b, r, cc)] = { color: (r * 2 + cc) % colors, special: null };
+    }
+    return b;
+  };
+  const setCell = (b, r, cc, color, special = null) => { b.cells[idx(b, r, cc)] = { color, special }; };
+
+  // 横向条纹：交换后形成包含条纹的三连 → 整行被清除
+  const b1 = buildPlain();
+  setCell(b1, 3, 0, 0); setCell(b1, 3, 1, 0);
+  setCell(b1, 3, 2, 1);
+  setCell(b1, 3, 3, 0, SP.STRIPE_H);
+  const r1 = resolveSwap(b1, idx(b1, 3, 2), idx(b1, 3, 3));
+  check('横向条纹参与三连后触发', r1.valid && r1.combos.some((x) => (x.triggered || []).length > 0),
+    JSON.stringify(r1.combos.map((x) => x.triggered)));
+  check('横向条纹清掉整行（消除数 ≥ 行宽 7）', r1.clearedTotal >= 7, `cleared=${r1.clearedTotal}`);
+  check('步骤数据携带 triggered，供动画播放特效',
+    r1.steps.some((s) => Array.isArray(s.triggered) && s.triggered.length > 0));
+
+  // 竖向条纹：同构验证
+  const b2 = buildPlain();
+  setCell(b2, 0, 3, 0); setCell(b2, 1, 3, 0);
+  setCell(b2, 2, 3, 1);
+  setCell(b2, 3, 3, 0, SP.STRIPE_V);
+  setCell(b2, 2, 4, 0);
+  const r2 = resolveSwap(b2, idx(b2, 2, 3), idx(b2, 3, 3));
+  check('竖向条纹参与三连后触发', r2.combos.some((x) => (x.triggered || []).length > 0));
+
+  // 一次触发两个特殊方块：顺序应为「离交换点由近及远」
+  const b3 = buildPlain();
+  setCell(b3, 3, 0, 0, SP.STRIPE_H);   // 远端
+  setCell(b3, 3, 1, 0);
+  setCell(b3, 3, 2, 1, null);          // 待交换
+  setCell(b3, 3, 3, 0, SP.STRIPE_V);   // 近端（交换后落在 3,2）
+  const r3 = resolveSwap(b3, idx(b3, 3, 2), idx(b3, 3, 3));
+  const trig = r3.combos.flatMap((x) => x.triggered || []);
+  check('一次消除可同时触发多个特殊方块', trig.length >= 2, `triggers=${trig.length}`);
+  check('多特殊方块按「离交换点由近及远」排序',
+    trig.length >= 2 && trig[0].index === idx(b3, 3, 2),
+    JSON.stringify(trig.map((t) => `${t.index}:${t.special}`)));
+  check('两个特殊方块互换会触发组合爆发', (() => {
+    const b4 = buildPlain();
+    setCell(b4, 3, 2, 0, SP.STRIPE_H);
+    setCell(b4, 3, 3, 1, SP.BOMB);
+    const r4 = resolveSwap(b4, idx(b4, 3, 2), idx(b4, 3, 3));
+    return r4.valid && r4.crossBlast === true && r4.clearedTotal >= 12;
+  })());
+}
 // ---------- AC-14 ----------
 section('AC-14  星级阈值（R = 结算总分 / scoreTarget）');
 {

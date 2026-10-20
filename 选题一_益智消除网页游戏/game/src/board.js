@@ -446,6 +446,14 @@ export function resolveSwap(board, a, b, rng = defaultRng) {
         }
       }
     }
+    // 一次触发多个特殊方块时，按「离交换点由近及远」排序（参考开心消消乐的连锁顺序感）
+    if (triggered.length > 1) {
+      const distToSwap = (i) => Math.min(
+        Math.abs(rowOf(board, i) - rowOf(board, a)) + Math.abs(colOf(board, i) - colOf(board, a)),
+        Math.abs(rowOf(board, i) - rowOf(board, b)) + Math.abs(colOf(board, i) - colOf(board, b)),
+      );
+      triggered.sort((x, y) => distToSwap(x.index) - distToSwap(y.index) || x.index - y.index);
+    }
 
     // 计分与颜色统计（FR-06：特殊方块按普通方块计分）
     const byColor = {};
@@ -466,6 +474,7 @@ export function resolveSwap(board, a, b, rng = defaultRng) {
     result.combos.push({ comboIndex, cleared: count, score: gained, triggered });
 
     // 合成特殊方块（优先落在交换位）
+    const createdStart = result.specialsCreated.length;
     for (const g of groups) {
       if (!g.special) continue;
       let spawn = g.cells.find((x) => x === a || x === b);
@@ -474,12 +483,16 @@ export function resolveSwap(board, a, b, rng = defaultRng) {
       board.cells[spawn] = { color: g.color, special: g.special };
       result.specialsCreated.push({ index: spawn, special: g.special, color: g.color });
     }
+    const createdNow = result.specialsCreated.slice(createdStart);
 
     const clearedNow = [...toClear].filter((i) => board.cells[i]);
     for (const i of toClear) board.cells[i] = null;
     gravityAndRefill(board, rng);
-    // 供 UI 逐帧回放：本步消除格 + 补充后的快照（FR-16：动画只回放已确定结果）
-    result.steps.push({ comboIndex, cleared: clearedNow, score: gained, snapshot: cloneBoard(board) });
+    // 供 UI 逐帧回放：本步消除格、触发的特殊方块、新合成的特殊方块 + 补充后的快照（FR-16）
+    result.steps.push({
+      comboIndex, cleared: clearedNow, score: gained, snapshot: cloneBoard(board),
+      triggered: triggered.map((t) => ({ ...t })), created: createdNow,
+    });
   }
 
   return result;

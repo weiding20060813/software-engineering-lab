@@ -40,7 +40,7 @@ function exposeGame(main, loggerImpl) {
       setLoadout: main.setLoadout, toggleLoadoutItem: main.toggleLoadoutItem,
       equippedItems: main.equippedItems, onItemPick: main.onItemPick,
       // 棋盘工具直接取自领域层，避免把测试用导出混进正式版的应用层模块
-      findLegalMoves: board.findLegalMoves, matchAt: board.matchAt, isDeadlock: board.isDeadlock,
+      findLegalMoves: board.findLegalMoves, findMatches: board.findMatches, matchAt: board.matchAt, isDeadlock: board.isDeadlock,
       resolveSwap: board.resolveSwap, cloneBoard: board.cloneBoard,
       applyBombItem: board.applyBombItem, applyColorClear: board.applyColorClear,
       clearCellsAndSettle: board.clearCellsAndSettle,

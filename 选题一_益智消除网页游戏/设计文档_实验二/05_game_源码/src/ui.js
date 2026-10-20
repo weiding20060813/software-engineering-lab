@@ -476,12 +476,14 @@ function animateTimed(dur, drawFrame) {
 }
 
 /** 按"方块描述列表"渲染一帧（消除/下落阶段用，允许任意坐标、缩放与透明度） */
-function renderFrame(tiles) {
+function renderFrame(tiles, opts = {}) {
   if (!canvasCtx || !boardRef) return;
   const ctx = canvasCtx;
   ctx.clearRect(0, 0, cellSize * boardRef.cols, cellSize * boardRef.rows);
   const pad = Math.max(2, cellSize * 0.06);
   const base = cellSize - pad * 2;
+  ctx.save();
+  if (opts.dx || opts.dy) ctx.translate(opts.dx || 0, opts.dy || 0);   // 震屏
   tiles.forEach(({ cell, x, y, scale = 1, alpha = 1 }) => {
     const size = base * scale;
     const left = x * cellSize + pad + (base - size) / 2;
@@ -491,6 +493,142 @@ function renderFrame(tiles) {
     drawTile(ctx, left, top, size, cell, 0);
     ctx.restore();
   });
+  if (typeof opts.overlay === 'function') opts.overlay(ctx);
+  ctx.restore();
+}
+
+/* ==================== 特殊方块触发特效（FR-04-2） ==================== */
+// 目的：让"条纹清行/清列、炸弹、彩虹"在视觉上一眼可辨——光带扫过 + 白闪 + 震屏。
+
+/** 横向光带：从该行左端扫到右端 */
+function drawSweepH(ctx, row, cols, t) {
+  const cs = cellSize;
+  const y = row * cs;
+  const w = cols * cs;
+  ctx.fillStyle = `rgba(255,255,255,${0.30 * (1 - t)})`;      // 整行泛白
+  ctx.fillRect(0, y, w, cs);
+  const G = cs * 2.4;
+  const x = -G + t * (w + 2 * G);                              // 光带位置
+  const grad = ctx.createLinearGradient(x - G, 0, x + G, 0);
+  grad.addColorStop(0, 'rgba(120,220,255,0)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(1, 'rgba(120,220,255,0)');
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = grad;
+  ctx.fillRect(x - G, y, G * 2, cs);
+  ctx.restore();
+}
+
+/** 纵向光带：从该列顶端扫到底端 */
+function drawSweepV(ctx, col, rows, t) {
+  const cs = cellSize;
+  const x = col * cs;
+  const h = rows * cs;
+  ctx.fillStyle = `rgba(255,255,255,${0.30 * (1 - t)})`;
+  ctx.fillRect(x, 0, cs, h);
+  const G = cs * 2.4;
+  const y = -G + t * (h + 2 * G);
+  const grad = ctx.createLinearGradient(0, y - G, 0, y + G);
+  grad.addColorStop(0, 'rgba(120,220,255,0)');
+  grad.addColorStop(0.45, 'rgba(255,255,255,0.95)');
+  grad.addColorStop(1, 'rgba(120,220,255,0)');
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = grad;
+  ctx.fillRect(x, y - G, cs, G * 2);
+  ctx.restore();
+}
+
+/** 炸弹：中心冲击环 + 暖色径向光 */
+function drawBurstFx(ctx, row, col, t) {
+  const cs = cellSize;
+  const cx = (col + 0.5) * cs;
+  const cy = (row + 0.5) * cs;
+  const R = cs * (0.4 + 1.9 * easeOut(t));
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+  g.addColorStop(0, `rgba(255,235,160,${0.95 * (1 - t)})`);
+  g.addColorStop(0.55, `rgba(255,150,80,${0.55 * (1 - t)})`);
+  g.addColorStop(1, 'rgba(255,120,60,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R, 0, Math.PI * 2);
+  ctx.fill();
+  for (let k = 0; k < 2; k++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * (1 - k * 0.32), 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255,255,255,${0.85 * (1 - t) * (1 - k * 0.4)})`;
+    ctx.lineWidth = Math.max(2, cs * 0.16 * (1 - t));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** 彩虹：全盘彩虹闪光 */
+function drawRainbowFx(ctx, cols, rows, t) {
+  const cs = cellSize;
+  const w = cols * cs;
+  const h = rows * cs;
+  const g = ctx.createLinearGradient(0, 0, w, h);
+  g.addColorStop(0, '#ff6b81');
+  g.addColorStop(0.35, '#ffc857');
+  g.addColorStop(0.7, '#4ad9a4');
+  g.addColorStop(1, '#7c6cff');
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.9 * Math.sin(Math.PI * Math.min(1, t * 1.15));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+}
+
+/** 绘制特殊方块特效的"某一帧"（t∈[0,1]）：动画与单帧预览共用 */
+function drawSpecialFrame(current, trg, t, opts = {}) {
+  const cs = cellSize;
+  const tiles = [];
+  for (let i = 0; i < current.cells.length; i++) {
+    const cell = current.cells[i];
+    if (!cell) continue;
+    tiles.push({ cell, x: colOf(current, i), y: rowOf(current, i), alpha: 0.85 });
+  }
+  const r = rowOf(current, trg.index);
+  const c = colOf(current, trg.index);
+  const isBomb = trg.special === SP.BOMB;
+  const shake = (isBomb && opts.shake !== false)
+    ? { dx: (Math.random() - 0.5) * cs * 0.45 * (1 - t), dy: (Math.random() - 0.5) * cs * 0.45 * (1 - t) }
+    : {};
+  renderFrame(tiles, {
+    ...shake,
+    overlay: (ctx) => {
+      if (trg.special === SP.STRIPE_H) drawSweepH(ctx, r, current.cols, t);
+      else if (trg.special === SP.STRIPE_V) drawSweepV(ctx, c, current.rows, t);
+      else if (isBomb) drawBurstFx(ctx, r, c, t);
+      else if (trg.special === SP.RAINBOW) drawRainbowFx(ctx, current.cols, current.rows, t);
+    },
+  });
+}
+
+/** 播放单个特殊方块的触发特效（棋盘静止作为背景） */
+function animateSpecialTrigger(current, trg, dur) {
+  return animateTimed(dur, (t) => drawSpecialFrame(current, trg, t));
+}
+
+/**
+ * 仅测试版使用：把特效固定在某一帧画出来（t=0.5 时扫光正在中间），
+ * 便于端到端做像素断言，不受帧率与时序影响。
+ */
+export function drawSpecialPreview(special, index, t = 0.5) {
+  if (!boardRef) return { ok: false };
+  drawSpecialFrame(boardRef, { index, special }, t, { shake: false });
+  return { ok: true };
+}
+
+/** 依次播放本步触发的所有特殊方块（一次多个时逐个展示，顺序由领域层给出） */
+function animateSpecialEffects(current, list, speed) {
+  const dur = Math.max(110, 190 / speed);
+  return list.reduce((chain, trg) => chain.then(() => animateSpecialTrigger(current, trg, dur)), Promise.resolve());
 }
 
 /**
@@ -549,7 +687,9 @@ function playCascadeStep(current, step, speed) {
       else tiles.push({ cell, x: c, y: r });
     }
     renderFrame(tiles);
-  }).then(() => animateTimed(dFall, (t) => {
+  })
+    .then(() => animateSpecialEffects(current, Array.isArray(step.triggered) ? step.triggered : [], speed))
+    .then(() => animateTimed(dFall, (t) => {
     const e = easeOut(t);
     const tiles = [];
     for (let c = 0; c < cols; c++) {
@@ -883,6 +1023,10 @@ function drawTile(ctx, x, y, size, cell, flash) {
   const shape = colorIndex % SHAPE_COUNT;
 
   ctx.save();
+  if (cell.special) {                       // 特殊方块常驻发光：让玩家一眼看出"这个不一样"
+    ctx.shadowColor = cell.special === SP.RAINBOW ? '#ffffff' : base;
+    ctx.shadowBlur = Math.max(8, size * 0.34);
+  }
   if (flash > 0) {
     ctx.globalAlpha = Math.max(0.15, flash);
     ctx.shadowColor = '#ffffff';
@@ -1008,7 +1152,7 @@ function escapeHtml(s) {
 }
 
 export const __internals = {
-  drawBoard, layoutAndDraw, CELL_COLORS, GUIDE_TEXT, showHint, clearHint,
+  drawBoard, layoutAndDraw, CELL_COLORS, GUIDE_TEXT, showHint, clearHint, animateSpecialTrigger, drawSpecialPreview,
   /** 仅测试版使用：暴露渲染/输入状态，便于端到端断言 */
   getDebugFlags: () => ({ keyboardMode, cellSize, selection, cursor, inputLocked }),
 };
