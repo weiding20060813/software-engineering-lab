@@ -426,9 +426,19 @@ function runOne(ev, speed) {
       return animateCascade(ev, speed);
     case 'shuffle':
       return animateShuffle(speed);
-    case 'combo':
-      showCombo(ev.combo);
+    case 'combo': {
+      // 取本步消除格的重心作为飘字位置
+      let center = null;
+      const cleared = ev.cleared || (ev.steps && ev.steps[0] && ev.steps[0].cleared) || [];
+      if (cleared.length && boardRef) {
+        let sr = 0;
+        let sc = 0;
+        cleared.forEach((i) => { sr += rowOf(boardRef, i); sc += colOf(boardRef, i); });
+        center = { r: sr / cleared.length, c: sc / cleared.length };
+      }
+      showCombo(ev.combo, center);
       return Promise.resolve();
+    }
     default:
       return Promise.resolve();
   }
@@ -479,22 +489,80 @@ function animateTimed(dur, drawFrame) {
 function renderFrame(tiles, opts = {}) {
   if (!canvasCtx || !boardRef) return;
   const ctx = canvasCtx;
-  ctx.clearRect(0, 0, cellSize * boardRef.cols, cellSize * boardRef.rows);
+  const W = cellSize * boardRef.cols;
+  const H = cellSize * boardRef.rows;
+  ctx.clearRect(0, 0, W, H);
   const pad = Math.max(2, cellSize * 0.06);
   const base = cellSize - pad * 2;
   ctx.save();
+  if (opts.zoom && opts.zoom !== 1) {          // 整体缩放（特殊方块触发时的"顿感"）
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(opts.zoom, opts.zoom);
+    ctx.translate(-W / 2, -H / 2);
+  }
   if (opts.dx || opts.dy) ctx.translate(opts.dx || 0, opts.dy || 0);   // 震屏
-  tiles.forEach(({ cell, x, y, scale = 1, alpha = 1 }) => {
+  tiles.forEach(({ cell, x, y, scale = 1, scaleX, scaleY, rot = 0, alpha = 1 }) => {
+    const sx = scaleX === undefined ? scale : scaleX;
+    const sy = scaleY === undefined ? scale : scaleY;
     const size = base * scale;
     const left = x * cellSize + pad + (base - size) / 2;
     const top = y * cellSize + pad + (base - size) / 2;
+    const cx = left + size / 2;
+    const cy = top + size / 2;
     ctx.save();
     ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    if (rot || sx !== 1 || sy !== 1) {
+      ctx.translate(cx, cy);
+      if (rot) ctx.rotate(rot);
+      if (sx !== 1 || sy !== 1) ctx.scale(sx, sy);
+      ctx.translate(-cx, -cy);
+    }
     drawTile(ctx, left, top, size, cell, 0);
     ctx.restore();
   });
+  drawParticles(ctx);                                  // 消除粒子
   if (typeof opts.overlay === 'function') opts.overlay(ctx);
   ctx.restore();
+}
+
+/* ==================== 消除粒子（星尘） ==================== */
+const fx = [];                                        // { x, y, vx, vy, born, life, size, color }
+
+function spawnParticles(cx, cy, count, colors, spread = 1) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = (0.35 + Math.random() * 0.9) * spread;
+    fx.push({
+      x: cx, y: cy,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp - 0.35,
+      born: now(),
+      life: 360 + Math.random() * 260,
+      size: cellSize * (0.07 + Math.random() * 0.07),
+      color: colors[Math.floor(Math.random() * colors.length)],
+    });
+  }
+  if (fx.length > 260) fx.splice(0, fx.length - 260);   // 上限，防止长时间连击堆积
+}
+
+function drawParticles(ctx) {
+  if (!fx.length) return;
+  const t0 = now();
+  for (let i = fx.length - 1; i >= 0; i--) {
+    const p = fx[i];
+    const age = t0 - p.born;
+    if (age > p.life) { fx.splice(i, 1); continue; }
+    const k = age / p.life;
+    const x = p.x + p.vx * age * 0.055;
+    const y = p.y + p.vy * age * 0.055 + 0.00055 * age * age;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - k);
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(0.6, p.size * (1 - 0.65 * k)), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 /* ==================== 特殊方块触发特效（FR-04-2） ==================== */
@@ -661,7 +729,10 @@ function animateCascade(ev, speed) {
   });
 }
 
-/** 单步：淡出 → 下落 + 补位 */
+/**
+ * 单步消除：先「弹一下」再炸开消失（逐格扫过的错峰），然后下落 + 落地压扁回弹。
+ * 手感参考开心消消乐：消除有前摇、有星尘粒子、下落有弹性。
+ */
 function playCascadeStep(current, step, speed) {
   const rows = current.rows;
   const cols = current.cols;
@@ -673,27 +744,66 @@ function playCascadeStep(current, step, speed) {
   clearedRowsByCol.forEach((arr) => arr.sort((x, y) => x - y));
 
   const snapshot = step.snapshot || current;
-  const dOut = Math.max(70, ANIM.clear / speed / 1.6);
-  const dFall = Math.max(140, ANIM.fall / speed);
+  const triggers = Array.isArray(step.triggered) ? step.triggered : [];
+  const dFall = Math.max(150, ANIM.fall / speed);
 
-  const drawFade = (t) => {
+  // 错峰：有特殊方块触发时，被扫到的格子按"离触发点距离"依次消失（同批，但带扫动感）
+  const origins = triggers.length
+    ? triggers.map((t2) => [rowOf(current, t2.index), colOf(current, t2.index)])
+    : [[rowOf(current, [...clearedSet][0]), colOf(current, [...clearedSet][0])]];
+  const staggerMs = triggers.length ? 16 : 0;
+  const delayOf = new Map();
+  let maxDelay = 0;
+  clearedSet.forEach((i) => {
+    const r = rowOf(current, i);
+    const c = colOf(current, i);
+    let d = Infinity;
+    for (const [or, oc] of origins) d = Math.min(d, Math.abs(r - or) + Math.abs(c - oc));
+    const delay = Math.min(d, 8) * staggerMs;
+    delayOf.set(i, delay);
+    if (delay > maxDelay) maxDelay = delay;
+  });
+
+  const cellMs = Math.max(150, 210 / speed);         // 单格"弹出→缩小"总时长
+  const clearDur = cellMs + maxDelay;
+  const punched = new Set();                        // 已迸发粒子的格子
+  const palette = ['#ffffff', '#ffd166', '#ff8fa3', '#8be9fd'];
+
+  const drawClear = (t) => {
+    const elapsed = t * clearDur;
     const tiles = [];
     for (let i = 0; i < current.cells.length; i++) {
       const cell = current.cells[i];
       if (!cell) continue;
       const r = rowOf(current, i);
       const c = colOf(current, i);
-      if (clearedSet.has(i)) tiles.push({ cell, x: c, y: r, scale: 1 - 0.8 * t, alpha: 1 - t });
-      else tiles.push({ cell, x: c, y: r });
+      if (!clearedSet.has(i)) { tiles.push({ cell, x: c, y: r }); continue; }
+      const local = Math.max(0, Math.min(1, (elapsed - delayOf.get(i)) / cellMs));
+      let scale;
+      let alpha = 1;
+      let rot = 0;
+      if (local < 0.32) {
+        // ① 前摇：先放大一点（"弹"）
+        scale = 1 + 0.22 * Math.sin((local / 0.32) * (Math.PI / 2));
+      } else {
+        // ② 炸开：快速缩小 + 轻微旋转 + 淡出
+        const k2 = (local - 0.32) / 0.68;
+        scale = 1.22 * (1 - easeOut(k2));
+        alpha = 1 - k2;
+        rot = (i % 2 === 0 ? 1 : -1) * 0.35 * k2;
+        if (!punched.has(i)) {
+          punched.add(i);
+          spawnParticles((c + 0.5) * cellSize, (r + 0.5) * cellSize, 7, palette);
+        }
+      }
+      tiles.push({ cell, x: c, y: r, scale: Math.max(0.02, scale), alpha, rot });
     }
     renderFrame(tiles);
   };
-  // 先播特殊方块特效（扫光/爆炸），再让本步所有被消除的方块**同时**淡出：
-  // "触发者"与"被触发后要消除的方块"是一次消失，而不是分两次（FR-04-4）
-  return animateSpecialEffects(current, Array.isArray(step.triggered) ? step.triggered : [], speed)
-    .then(() => animateTimed(dOut, drawFade))
-    .then(() => animateTimed(dFall, (t) => {
-    const e = easeOut(t);
+
+  const drawFall = (t) => {
+    const e = easeOutBack(t);                        // 带一点过冲，落地更有"砸下来"的力
+    const squash = t > 0.84 ? 1 - 0.26 * Math.sin(((t - 0.84) / 0.16) * Math.PI) : 1;
     const tiles = [];
     for (let c = 0; c < cols; c++) {
       const gone = clearedRowsByCol[c];
@@ -703,17 +813,33 @@ function playCascadeStep(current, step, speed) {
         const cell = current.cells[i];
         if (!cell || clearedSet.has(i)) continue;
         const below = gone.filter((gr) => gr > r).length;
-        tiles.push({ cell, x: c, y: r + below * e });
+        const moved = below > 0;
+        tiles.push({
+          cell, x: c, y: r + below * e,
+          scaleY: moved ? squash : 1,
+          scaleX: moved ? 1 + (1 - squash) * 0.7 : 1,
+        });
       }
       for (let j = 0; j < k; j++) {
         const cell = snapshot.cells[idx(snapshot, j, c)];
         if (!cell) continue;
         const from = j - k;
-        tiles.push({ cell, x: c, y: from + (j - from) * e });
+        tiles.push({
+          cell, x: c, y: from + (j - from) * e,
+          scaleY: squash,
+          scaleX: 1 + (1 - squash) * 0.7,
+        });
       }
     }
     renderFrame(tiles);
-  })).then(() => snapshot);
+  };
+
+  // 先播特殊方块特效（扫光/爆炸），再让本步所有被消除的方块错峰炸开（同批，不是两次消除），
+  // 最后下落 + 补位。顺序：特效 → 弹出炸开 → 下落
+  return animateSpecialEffects(current, triggers, speed)
+    .then(() => animateTimed(clearDur, drawClear))
+    .then(() => animateTimed(dFall, drawFall))
+    .then(() => snapshot);
 }
 
 /** 兜底：事件不带 steps 时，按前后差异做简单回放 */
@@ -759,12 +885,24 @@ function requestFrame() {
 
 function now() { return (globalThis.performance && performance.now) ? performance.now() : Date.now(); }
 function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+/** 带过冲的缓出：下落/补位用，落地更有弹跳感 */
+function easeOutBack(t) {
+  const c1 = 1.28;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
 
-function showCombo(combo) {
+function showCombo(combo, center) {
   if (!dom.playCombo || !combo || combo < 2) return;
   dom.playCombo.textContent = `连击 ×${combo}`;
+  if (center && cellSize) {
+    dom.playCombo.style.left = `${(center.c + 0.5) * cellSize}px`;
+    dom.playCombo.style.top = `${(center.r + 0.5) * cellSize}px`;
+  }
+  dom.playCombo.classList.remove('is-show');
+  void dom.playCombo.offsetWidth;         // 强制回流，保证连击时动画能重新触发
   dom.playCombo.classList.add('is-show');
-  setTimeout(() => dom.playCombo && dom.playCombo.classList.remove('is-show'), 700);
+  setTimeout(() => dom.playCombo && dom.playCombo.classList.remove('is-show'), 780);
 }
 
 /* ==================== API-35 输入锁 ==================== */

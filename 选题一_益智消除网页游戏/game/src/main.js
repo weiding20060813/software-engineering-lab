@@ -351,7 +351,7 @@ export async function onSwap(a, b) {
   ui.setSuppressCanvas(false);
   await ui.playSequence([
     { type: 'swap', a, b, board: mid },
-    { type: 'combo', combo: result.combos.length },
+    { type: 'combo', combo: result.combos.length, cleared: (result.steps[0] || {}).cleared || [] },
     { type: 'cascade', before: mid, after: p.board, steps: result.steps },
   ]);
 
