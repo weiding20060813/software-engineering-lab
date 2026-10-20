@@ -376,6 +376,7 @@ function afterMove() {
 export function onSettle(won) {
   const p = state.play;
   if (!p) return { ok: false };
+  const previousBest = Number((state.save.bestScores || {})[p.level.id] || 0);
   log.info('settle.begin', { won, level: p.level.id, score: p.inLevelScore, movesLeft: p.movesLeft });
   const settled = settleLevel(state.save, p.level, {
     won, inLevelScore: p.inLevelScore, movesLeft: p.movesLeft,
@@ -384,6 +385,8 @@ export function onSettle(won) {
   state.result = {
     won, stars: settled.stars, total: settled.total, coinsGained: settled.coinsGained,
     isNewBest: settled.isNewBest, firstClear: settled.firstClear,
+    previousBest, inLevelScore: p.inLevelScore,
+    moveBonus: won ? Math.max(0, settled.total - p.inLevelScore) : 0,
     canNext: settled.canNext, level: p.level,
   };
   log.info('settle.done', {
@@ -677,6 +680,7 @@ export function boot(doc = typeof document !== 'undefined' ? document : null) {
     stars: totalStars(state.save), audio: state.audioAvailable,
   });
   endBoot({ status: bootStatus });
+  if (doc.documentElement) doc.documentElement.setAttribute('data-app-booted', '1');
 
   // 首次用户交互后初始化音频（浏览器自动播放策略 + NFR-01f）
   const unlock = () => {

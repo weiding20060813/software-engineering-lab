@@ -215,14 +215,18 @@ try {
       hudCoins: Number(String((document.getElementById('play-coins') || {}).textContent || '').replace(/[^0-9]/g, '')),
       stars: g.api.totalStars(g.state.save),
       demo: /demo=1/.test(location.search),
+      booted: document.documentElement.hasAttribute('data-app-booted'),
       hasPanel: !!document.getElementById('debug-panel'),
       logs: g.log.get().length,
     };
   })()`);
   check('启动完成且进入首页', boot.page === 'home', JSON.stringify(boot));
+  check('启动完成标记已写入（启动兜底不会误报）', boot.booted === true, String(boot.booted));
   check('演示存档已载入（解锁 2-6 / 860 金币）', boot.unlock === '2-6' && boot.coins === 860);
   check('调试面板已注入', boot.hasPanel === true);
   check('启动日志已采集', boot.logs > 0, `${boot.logs} 条`);
+  // 截图前收起调试面板，避免遮住结算页按钮（不影响日志采集）
+  await evaluate(`window.__game.log.panel(false)`);
   await shot('01_home');
 
   /* ---------- 2. 选关页：章节过滤 ---------- */
@@ -236,6 +240,35 @@ try {
   })()`);
   check('选关页只渲染当前章节（10 关）', ch2.count === 10, `实际 ${ch2.count} 关: ${ch2.cells.join(',')}`);
   check('默认定位到进度所在章节（第 2 章）', /第\s*2\s*章/.test(ch2.active) && ch2.cells[0] === '2-1');
+  const chHead2 = await evaluate(`(() => ({
+    kicker: document.getElementById('levels-chapter-kicker').textContent,
+    name: document.getElementById('levels-chapter-name').textContent,
+    progress: document.getElementById('levels-chapter-progress').textContent,
+  }))()`);
+  check('章节头显示第 2 章名称与进度',
+    chHead2.kicker.includes('第 2 章') && chHead2.name === '星辉海滩' && /5\s*\/\s*10 关/.test(chHead2.progress),
+    `${chHead2.kicker} / ${chHead2.name} / ${chHead2.progress}`);
+  const card26 = await evaluate(`(() => {
+    const cell = [...document.querySelectorAll('#levels-grid .level-cell')].find(b => b.querySelector('.lv-id').textContent === '2-6');
+    const chip = cell && cell.querySelector('.lv-obj .target-chip');
+    return {
+      text: cell ? cell.querySelector('.lv-obj').textContent.replace(/\\s+/g, ' ').trim() : '',
+      aria: cell ? cell.getAttribute('aria-label') || '' : '',
+      chip: !!chip,
+      fill: chip && chip.querySelector('svg *') ? chip.querySelector('svg *').getAttribute('fill') : '',
+      current: !!(cell && cell.classList.contains('is-current')),
+    };
+  })()`);
+  check('消除型关卡卡显示目标颜色+形状', card26.chip && /红圆/.test(card26.text) && /36/.test(card26.text),
+    `${card26.text} / chip=${card26.chip} / fill=${card26.fill}`);
+  check('关卡卡无障碍名称包含目标色', /目标/.test(card26.aria) && /红圆/.test(card26.aria), card26.aria);
+  check('目标色 chip 使用该关目标色', card26.fill === '#ff6b81', card26.fill);
+  check('当前进度关卡高亮', card26.current === true, String(card26.current));
+  const locked27 = await evaluate(`(() => {
+    const cell = [...document.querySelectorAll('#levels-grid .level-cell')].find(b => b.querySelector('.lv-id').textContent === '2-7');
+    return { disabled: !!(cell && cell.disabled), lock: !!(cell && cell.querySelector('.lv-lock')) };
+  })()`);
+  check('锁定关卡有锁标记且不可点', locked27.disabled && locked27.lock, JSON.stringify(locked27));
   await shot('02_levels_ch2');
 
   await evaluate(`[...document.querySelectorAll('#levels-tabs .tab')][0].click()`);
@@ -245,6 +278,16 @@ try {
     return { cells, count: cells.length };
   })()`);
   check('切到第 1 章后只显示 1-1~1-10', ch1.count === 10 && ch1.cells[0] === '1-1' && ch1.cells[9] === '1-10', ch1.cells.join(','));
+  const chHead1 = await evaluate(`(() => ({
+    kicker: document.getElementById('levels-chapter-kicker').textContent,
+    name: document.getElementById('levels-chapter-name').textContent,
+  }))()`);
+  check('切章后章节头同步', chHead1.kicker.includes('第 1 章') && chHead1.name === '晨光草坪', `${chHead1.kicker} / ${chHead1.name}`);
+  const bestText = await evaluate(`(() => {
+    const first = document.querySelector('#levels-grid .level-cell .lv-best');
+    return first ? first.textContent : '';
+  })()`);
+  check('关卡卡显示历史最佳分', /16400/.test(bestText), bestText);
   const starText = await evaluate(`(() => {
     const first = document.querySelector('#levels-grid .level-cell .lv-stars');
     return first ? first.textContent : '';
@@ -252,10 +295,71 @@ try {
   check('星级为 3 槽位填空式（1-1 应为 ★★★ 或 ★★☆ 等 3 字符）', [...starText].length === 3, `"${starText}"`);
   await shot('03_levels_ch1');
 
+  /* ---------- 2.5 消除型关卡：目标色在 HUD / 结算中可读 ---------- */
+  log('\n=== 2.5) 消除型关卡目标色 ===');
+  await evaluate(`window.__game.api.startLevel('2-6')`);
+  await waitFor(`window.__game.state.page === 'play'`);
+  const targetHud = await evaluate(`(() => {
+    const chip = document.getElementById('play-target-chip');
+    return {
+      label: document.getElementById('play-target-label').textContent,
+      target: document.getElementById('play-target').textContent,
+      chipText: chip ? chip.textContent.replace(/\\s+/g, ' ').trim() : '',
+      hidden: !chip || chip.classList.contains('hidden'),
+      hasSvg: !!(chip && chip.querySelector('svg')),
+      fill: chip && chip.querySelector('svg *') ? chip.querySelector('svg *').getAttribute('fill') : '',
+    };
+  })()`);
+  check('消除型 HUD 显示目标色+形状', targetHud.label === '目标色' && !targetHud.hidden && /红圆/.test(targetHud.chipText) && targetHud.hasSvg,
+    JSON.stringify(targetHud));
+  check('消除型 HUD 目标进度为 0 / 36', /0\s*\/\s*36/.test(targetHud.target), targetHud.target);
+  check('HUD 目标色 chip 使用该关目标色', targetHud.fill === '#ff6b81', targetHud.fill);
+  await sleep(250);
+  await shot('03c_clear_target');
+
+  await evaluate(`window.__game.api.onSettle(true)`);
+  await waitFor(`window.__game.state.page === 'result'`);
+  const clearResult = await evaluate(`document.getElementById('result-sub').textContent.replace(/\\s+/g, ' ').trim()`);
+  check('消除型结算文案显示目标色而非目标分', /目标色/.test(clearResult) && /红圆/.test(clearResult) && /36/.test(clearResult),
+    clearResult);
+  await sleep(1400);
+  const clearProgress = await evaluate(`(() => {
+    const g = window.__game;
+    const r = g.state.result;
+    const line1 = document.getElementById('result-marker-1');
+    return {
+      total: r.total,
+      score: document.getElementById('result-score').textContent,
+      line1: Number(line1.dataset.value),
+      guaranteed: /通关保底/.test(line1.title),
+      label1: line1.querySelector('.result-star-label').textContent,
+      earned: document.querySelectorAll('#result-stars .result-star.is-earned').length,
+      gap: document.getElementById('result-gap').textContent,
+      fill: document.getElementById('result-fill').style.width,
+    };
+  })()`);
+  check('消除型低分通关 1★ 线落在本次得分（通关保底）',
+    clearProgress.line1 === clearProgress.total && clearProgress.guaranteed && /保底/.test(clearProgress.label1),
+    JSON.stringify(clearProgress));
+  check('消除型结算点亮 1 星并给出下一档差距',
+    clearProgress.earned === 1 && /距 2★/.test(clearProgress.gap) && parseFloat(clearProgress.fill) > 0,
+    JSON.stringify(clearProgress));
+  await shot('03d_clear_result');
+  await evaluate(`(() => {
+    const s = window.__game.state.save;
+    // 本段只验证目标色展示；恢复 2-6 的“未通关”状态，避免影响后面首通双倍用例
+    delete s.stars['2-6'];
+    delete s.bestScores['2-6'];
+  })()`);
+  await evaluate(`window.__game.api.navigate('levels')`);
+  await sleep(200);
+
   /* ---------- 3. 局内：交换与动画 ---------- */
   log('\n=== 3) 局内交换与动画 ===');
   await evaluate(`window.__game.api.startLevel('2-3')`);
   await waitFor(`window.__game.state.page === 'play'`);
+  const targetChipHidden = await evaluate(`document.getElementById('play-target-chip').classList.contains('hidden')`);
+  check('计分型关卡不显示目标色 chip', targetChipHidden === true, String(targetChipHidden));
   const hud0 = await evaluate(`(() => ({
     moves: document.getElementById('play-moves').textContent,
     score: document.getElementById('play-score').textContent,
@@ -374,6 +478,8 @@ try {
     for (let r = 0; r < b.rows; r++) {
       for (let c = 0; c < b.cols - 1; c++) {
         const i = r * b.cols + c;
+        // 选不同颜色的相邻对，便于用像素验证“真的弹回了”
+        if (b.cells[i].color === b.cells[i + 1].color) continue;
         const probe = g.api.cloneBoard(b);
         if (!g.api.resolveSwap(probe, i, i + 1).valid) return [i, i + 1];
       }
@@ -382,12 +488,38 @@ try {
   })()`);
   if (invalid) {
     const s0 = await hudState();
+    const visual0 = await evaluate(`(() => {
+      const g = window.__game, b = g.state.play.board;
+      g.ui.drawBoard(b, { selection: null, cursor: null });
+      const rgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+      return {
+        a: rgb(g.ui.CELL_COLORS[b.cells[${invalid[0]}].color % g.ui.CELL_COLORS.length]),
+        b: rgb(g.ui.CELL_COLORS[b.cells[${invalid[1]}].color % g.ui.CELL_COLORS.length]),
+      };
+    })()`);
     await evaluate(`window.__game.api.onSwap(${invalid[0]}, ${invalid[1]})`);
-    await sleep(500);
+    await sleep(700);
     const s1 = await hudState();
+    const visual1 = await evaluate(`(() => {
+      const g = window.__game, cv = document.getElementById('play-board');
+      const ctx = cv.getContext('2d');
+      const f = g.ui.getDebugFlags();
+      const dpr = window.devicePixelRatio || 1;
+      const cs = f.cellSize * dpr;
+      const read = (idx) => {
+        const r = Math.floor(idx / g.state.play.board.cols), c = idx % g.state.play.board.cols;
+        const d = ctx.getImageData(Math.floor((c + 0.5) * cs), Math.floor((r + 0.5) * cs), 1, 1).data;
+        return [d[0], d[1], d[2]];
+      };
+      return { a: read(${invalid[0]}), b: read(${invalid[1]}) };
+    })()`);
+    const near = (x, y) => Math.abs(x[0] - y[0]) <= 10 && Math.abs(x[1] - y[1]) <= 10 && Math.abs(x[2] - y[2]) <= 10;
     check('无效交换：不扣步数', s1.moves === s0.moves, `${s0.moves}→${s1.moves}`);
     check('无效交换：棋盘完全还原', s1.board === s0.board);
     check('无效交换：得分不变', s1.score === s0.score);
+    check('无效交换：动画结束后自动回到原棋盘（像素级）',
+      near(visual1.a, visual0.a) && near(visual1.b, visual0.b),
+      `expected ${JSON.stringify(visual0)} actual ${JSON.stringify(visual1)}`);
   } else {
     check('能构造出无效交换对（用于 AC-04 验证）', false);
   }
@@ -476,11 +608,13 @@ try {
     await shotClean('17_items_hint');
   }
 
-  // 4.7 结算：结果页 → 下一关
+  // 4.7 结算：结果页 → 下一关（并验证进度条/星级线/历史最高线）
   {
     const before = await hudState();
+    // 测试“超越历史最高线”的分支：把 2-3 历史最高临时降到 1000
+    await evaluate(`window.__game.state.save.bestScores['2-3'] = 1000`);
     await evaluate(`window.__game.api.onSettle(true)`);
-    await sleep(300);
+    await sleep(1500);
     const res = await evaluate(`(() => ({
       page: window.__game.state.page,
       stars: document.getElementById('result-stars').textContent,
@@ -490,10 +624,42 @@ try {
       levelId: window.__game.state.play.level.id,
       unlocked: window.__game.state.save.unlockedLevelId,
     }))()`);
+    const resultS2 = await evaluate(`(() => {
+      const r = window.__game.state.result;
+      const markers = [...document.querySelectorAll('.result-star-marker')];
+      const best = document.getElementById('result-best-marker');
+      return {
+        total: r.total,
+        previousBest: r.previousBest,
+        fill: document.getElementById('result-fill').style.width,
+        lines: markers.map((m) => Number(m.dataset.value)),
+        reached: markers.filter((m) => m.classList.contains('is-reached')).length,
+        earned: document.querySelectorAll('#result-stars .result-star.is-earned').length,
+        bestHidden: best.classList.contains('hidden'),
+        bestPassed: best.classList.contains('is-passed'),
+        bestLabel: document.getElementById('result-best-label').textContent,
+        gap: document.getElementById('result-gap').textContent,
+        base: Number(document.getElementById('result-base').textContent),
+        bonus: Number(document.getElementById('result-bonus').textContent),
+        totalText: Number(document.getElementById('result-total').textContent),
+        scoreText: Number(document.getElementById('result-score').textContent),
+      };
+    })()`);
     check('过关后进入结算页', res.page === 'result');
     check('结算页星级为 3 槽位', [...res.stars.trim()].length === 3, `"${res.stars}"`);
     check('结算页显示总分（数值）', Number(String(res.score).replace(/[^\d]/g, '')) > 0, res.score);
     check('结算页显示金币奖励', /\+/.test(res.sub) || /金币/.test(res.sub), res.sub);
+    check('结算进度条已填充且三条星级线存在',
+      parseFloat(resultS2.fill) > 0 && resultS2.lines.length === 3 && resultS2.lines.every((v) => v > 0),
+      JSON.stringify(resultS2));
+    check('结算得分/局内分/步数奖励一致',
+      resultS2.scoreText === resultS2.total && resultS2.base + resultS2.bonus === resultS2.totalText && resultS2.totalText === resultS2.total,
+      JSON.stringify(resultS2));
+    check('达到 1★ 并点亮 1 颗星', resultS2.earned === 1 && resultS2.reached >= 1, JSON.stringify(resultS2));
+    check('历史最高线显示且标记为已超越',
+      !resultS2.bestHidden && resultS2.bestPassed && /1000/.test(resultS2.bestLabel),
+      `${resultS2.bestLabel} / hidden=${resultS2.bestHidden} / passed=${resultS2.bestPassed}`);
+    check('给出距下一星的差距', /距 2★/.test(resultS2.gap), resultS2.gap);
     await shot('08_result');
     if (!res.nextDisabled) {
       await click('result-next');
@@ -527,6 +693,39 @@ try {
     check('同一关重复通关只给基础金币（+10）', r2.coins - r1.coins === 10, `Δ${r2.coins - r1.coins}`);
     check('重复通关不再标注双倍', !/双倍/.test(r2.sub), r2.sub);
   }
+
+  // 4.9 三星结算：三条线全部点亮 + 历史最高线被超越
+  {
+    await evaluate(`window.__game.api.startLevel('1-1')`);
+    await waitFor(`window.__game.state.page === 'play'`);
+    await evaluate(`window.__game.state.play.inLevelScore = 20000`);
+    await evaluate(`window.__game.api.onSettle(true)`);
+    await waitFor(`window.__game.state.page === 'result'`);
+    await sleep(1500);
+    const three = await evaluate(`(() => {
+      const markers = [...document.querySelectorAll('.result-star-marker')];
+      const best = document.getElementById('result-best-marker');
+      return {
+        total: window.__game.state.result.total,
+        earned: document.querySelectorAll('#result-stars .result-star.is-earned').length,
+        reached: markers.filter((m) => m.classList.contains('is-reached')).length,
+        fill: document.getElementById('result-fill').style.width,
+        bestPassed: best.classList.contains('is-passed'),
+        bestLabel: document.getElementById('result-best-label').textContent,
+        gap: document.getElementById('result-gap').textContent,
+      };
+    })()`);
+    check('高分结算点亮 3 星且三条线全部达到',
+      three.earned === 3 && three.reached === 3, JSON.stringify(three));
+    check('三星结算进度条接近满格', parseFloat(three.fill) > 90, three.fill);
+    check('三星结算超越 1-1 历史最高线',
+      three.bestPassed && /16400/.test(three.bestLabel), `${three.bestLabel} / passed=${three.bestPassed}`);
+    check('三星结算显示已达成 3★', /已达成 3★/.test(three.gap), three.gap);
+    await shot('08b_result_3star');
+    await evaluate(`window.__game.api.navigate('levels')`);
+    await sleep(200);
+  }
+
   // 4.5 排行榜：两榜都有内容且可切换
   {
     await evaluate(`window.__game.api.navigate('rank')`);
@@ -597,6 +796,7 @@ try {
   await sleep(1600);
   const prod = await evaluate(`({
     hasGame: typeof window.__game !== 'undefined',
+    booted: document.documentElement.hasAttribute('data-app-booted'),
     hasPanel: !!document.getElementById('debug-panel'),
     hasBadge: !!document.getElementById('dev-badge'),
     activePage: document.querySelector('.page.is-active') ? document.querySelector('.page.is-active').id : null,
@@ -607,6 +807,7 @@ try {
   check('正式版无"测试版"角标', prod.hasBadge === false);
   check('正式版标题不含"测试版"', !/测试版/.test(prod.title), prod.title);
   check('正式版正常启动到首页', prod.activePage === 'page-home', String(prod.activePage));
+  check('正式版启动完成标记已写入', prod.booted === true, String(prod.booted));
   await shot('12_production');
 } catch (e) {
   console.error('\n运行失败:', e && e.message ? e.message : e);

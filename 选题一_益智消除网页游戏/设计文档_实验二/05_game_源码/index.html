@@ -35,6 +35,13 @@
       <span class="bar-meta" id="levels-total-stars">★ 0</span>
     </header>
     <nav class="tabs" id="levels-tabs" aria-label="章节"></nav>
+    <div class="chapter-head" id="levels-chapter-head">
+      <div class="chapter-head-main">
+        <span class="chapter-kicker" id="levels-chapter-kicker">第 1 章</span>
+        <h3 class="chapter-name" id="levels-chapter-name">晨光草坪</h3>
+      </div>
+      <span class="chapter-progress" id="levels-chapter-progress">0 / 10 关 · 0 / 30 ★</span>
+    </div>
     <div class="level-grid" id="levels-grid"></div>
   </section>
 
@@ -48,6 +55,7 @@
     <div class="hud">
       <div class="hud-item">
         <span class="hud-label" id="play-target-label">目标</span>
+        <span class="target-chip hidden" id="play-target-chip" role="img"></span>
         <span class="hud-value" id="play-target">0 / 0</span>
       </div>
       <div class="hud-item">
@@ -74,6 +82,37 @@
       <h2 class="result-title" id="result-title">通关成功</h2>
       <div class="stars" id="result-stars" aria-label="星级"></div>
       <p class="result-score" id="result-score">0</p>
+      <div class="result-progress" id="result-progress" role="img" aria-label="结算进度">
+        <div class="result-track">
+          <div class="result-fill" id="result-fill"></div>
+          <div class="result-best-marker hidden" id="result-best-marker">
+            <span class="result-best-line"></span>
+            <span class="result-best-label" id="result-best-label">历史最高 0</span>
+          </div>
+          <div class="result-star-marker" id="result-marker-1" data-star="1">
+            <span class="result-star-line"></span>
+            <span class="result-star-icon" aria-hidden="true">★</span>
+            <span class="result-star-label">1★</span>
+          </div>
+          <div class="result-star-marker" id="result-marker-2" data-star="2">
+            <span class="result-star-line"></span>
+            <span class="result-star-icon" aria-hidden="true">★</span>
+            <span class="result-star-label">2★</span>
+          </div>
+          <div class="result-star-marker" id="result-marker-3" data-star="3">
+            <span class="result-star-line"></span>
+            <span class="result-star-icon" aria-hidden="true">★</span>
+            <span class="result-star-label">3★</span>
+          </div>
+          <div class="result-dot" id="result-dot"></div>
+        </div>
+      </div>
+      <p class="result-gap" id="result-gap"></p>
+      <div class="result-breakdown">
+        <div class="result-breakdown-row"><span>局内得分</span><strong id="result-base">0</strong></div>
+        <div class="result-breakdown-row"><span>剩余步数奖励</span><strong id="result-bonus">0</strong></div>
+        <div class="result-breakdown-row is-total"><span>最终总分</span><strong id="result-total">0</strong></div>
+      </div>
       <p class="result-sub" id="result-sub"></p>
       <div class="menu">
         <button class="btn btn-primary" id="result-next">下一关</button>
@@ -180,6 +219,27 @@
   </div>
 </div>
 
+<script>
+  // 启动兜底：file:// 下 ES module 会被 CORS 拦截，点击“开始游戏”会表现为无反应。
+  // 正常启动后 main.js 会给 <html> 加 data-app-booted；超时未启动则给出明确提示。
+  (function () {
+    function fail(message) {
+      var status = document.getElementById('home-status');
+      if (status) status.textContent = message;
+      var start = document.getElementById('home-continue');
+      if (start) { start.disabled = true; start.textContent = '无法启动'; }
+    }
+    if (location.protocol === 'file:') {
+      fail('请通过本地 HTTP 服务打开（不要直接双击 index.html）');
+      return;
+    }
+    setTimeout(function () {
+      if (!document.documentElement.hasAttribute('data-app-booted')) {
+        fail('游戏脚本加载失败：请刷新页面，或打开控制台查看错误');
+      }
+    }, 3000);
+  })();
+</script>
 <script type="module" src="src/main.js"></script>
 </body>
 </html>

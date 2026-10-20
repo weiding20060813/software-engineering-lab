@@ -5,8 +5,9 @@
 //   · 动画期间输入锁，丢弃新输入（UI-03、AC-07）
 //   · 颜色 + 形状双编码，灰度下仍可区分（FR-19、AC-32）
 
-import { ANIM } from './config.js';
+import { ANIM, STAR_THRESHOLDS } from './config.js';
 import { SP, idx, rowOf, colOf } from './board.js';
+import { CHAPTERS } from './levels.js';
 import * as log from './log.js';
 
 const CELL_COLORS = ['#ff6b81', '#ffc857', '#4ad9a4', '#4cc9f0', '#7c6cff', '#f072d8'];
@@ -29,6 +30,10 @@ let anim = null;
 let bannerTimer = null;
 let confirmResolver = null;
 let lastRender = {};
+let resultAnimKey = null;
+let resultRaf = 0;
+let resultTimers = [];
+let resultAnimRunning = false;
 
 /* ============================ API-32 mount ============================ */
 export function mount(rootEl, h = {}) {
@@ -92,13 +97,21 @@ function collect(root) {
     homeStatus: q('home-status'),
     levelsBack: q('levels-back'), levelsTabs: q('levels-tabs'), levelsGrid: q('levels-grid'),
     levelsTotalStars: q('levels-total-stars'), levelsItems: q('levels-items'),
+    levelsChapterKicker: q('levels-chapter-kicker'), levelsChapterName: q('levels-chapter-name'),
+    levelsChapterProgress: q('levels-chapter-progress'),
     playBack: q('play-back'), playLevelName: q('play-level-name'), playMoves: q('play-moves'),
-    playTarget: q('play-target'), playTargetLabel: q('play-target-label'), playScore: q('play-score'),
+    playTarget: q('play-target'), playTargetLabel: q('play-target-label'),
+    playTargetChip: q('play-target-chip'), playScore: q('play-score'),
     playCoins: q('play-coins'), playTip: q('play-tip'), playCombo: q('play-combo'),
     canvas: q('play-board'), items: q('play-items'), playItemsEmpty: q('play-items-empty'),
     itemsBack: q('items-back'), itemsList: q('items-list'), itemsCoins: q('items-coins'),
     itemsTip: q('items-tip'), itemsClear: q('items-clear'), itemsDone: q('items-done'),
     resultTitle: q('result-title'), resultStars: q('result-stars'), resultScore: q('result-score'),
+    resultProgress: q('result-progress'), resultFill: q('result-fill'),
+    resultBestMarker: q('result-best-marker'), resultBestLabel: q('result-best-label'),
+    resultMarker1: q('result-marker-1'), resultMarker2: q('result-marker-2'), resultMarker3: q('result-marker-3'),
+    resultDot: q('result-dot'), resultGap: q('result-gap'),
+    resultBase: q('result-base'), resultBonus: q('result-bonus'), resultTotal: q('result-total'),
     resultSub: q('result-sub'), resultNext: q('result-next'), resultRetry: q('result-retry'),
     resultSteps: q('result-steps'), resultBack: q('result-back'),
     rankTabs: q('rank-tabs'), rankTabTotal: q('rank-tab-total'), rankTabLevel: q('rank-tab-level'),
@@ -151,7 +164,20 @@ function renderHome(state) {
 function renderLevels(state) {
   const list = state.levels.list || [];
   const chapter = state.levels.chapter || 1;
-  if (dom.levelsTotalStars) dom.levelsTotalStars.textContent = '★ ' + countStars(state.save);
+  const save = state.save || { stars: {}, unlockedLevelId: '1-1', bestScores: {} };
+  const chapterLevels = list.filter((lv) => (lv.chapter || 1) === chapter);
+  const chapterStars = chapterLevels.reduce((n, lv) => n + Math.max(0, Math.min(3, (save.stars || {})[lv.id] || 0)), 0);
+  const chapterPassed = chapterLevels.filter((lv) => ((save.stars || {})[lv.id] || 0) > 0).length;
+  const chapterCfg = CHAPTERS.find((c) => c.chapter === chapter) || CHAPTERS[0];
+  const totalStars = countStars(save);
+
+  if (dom.levelsTotalStars) dom.levelsTotalStars.textContent = '★ ' + totalStars;
+  if (dom.levelsChapterKicker) dom.levelsChapterKicker.textContent = `第 ${chapter} 章`;
+  if (dom.levelsChapterName) dom.levelsChapterName.textContent = chapterCfg ? chapterCfg.name : '';
+  if (dom.levelsChapterProgress) {
+    dom.levelsChapterProgress.textContent = `${chapterPassed} / ${chapterLevels.length} 关 · ${chapterStars} / ${chapterLevels.length * 3} ★`;
+  }
+
   if (dom.levelsTabs && dom.levelsTabs.dataset.built !== '1') {
     dom.levelsTabs.innerHTML = '';
     for (let c = 1; c <= 3; c++) {
@@ -170,21 +196,31 @@ function renderLevels(state) {
     });
   }
   if (!dom.levelsGrid) return;
-  const save = state.save || { stars: {}, unlockedLevelId: '1-1' };
   const broken = state.levels.broken || [];
   dom.levelsGrid.innerHTML = '';
   // 按章节过滤：只渲染当前章节的 10 关（FR-12，选关页分章展示）
-  list.filter((lv) => (lv.chapter || 1) === chapter).forEach((lv) => {
+  chapterLevels.forEach((lv) => {
     const btn = document.createElement('button');
     const unlocked = isUnlocked(save, lv.id);
-    btn.className = 'level-cell' + (broken.includes(lv.id) ? ' is-broken' : '');
-    btn.disabled = !unlocked || broken.includes(lv.id);
     const stars = Math.max(0, Math.min(3, save.stars ? (save.stars[lv.id] || 0) : 0));
+    const best = Number((save.bestScores || {})[lv.id] || 0);
+    const isCurrent = save.unlockedLevelId === lv.id;
     // 星级固定 3 个槽位：实心为已获得，空心为未获得（1 星 → ★☆☆）
     const starText = '★'.repeat(stars) + '☆'.repeat(3 - stars);
+    btn.className = 'level-cell' + (broken.includes(lv.id) ? ' is-broken' : '') + (isCurrent ? ' is-current' : '');
+    btn.disabled = !unlocked || broken.includes(lv.id);
+    const target = targetInfo(lv);
+    const aria = [`第 ${lv.id} 关`];
+    if (target) aria.push(`目标 ${target.colorName}${target.shapeName} ${lv.objectiveTarget} 个`);
+    else aria.push(`目标 ${lv.scoreTarget} 分`);
+    if (best > 0) aria.push(`最佳 ${best} 分`);
+    if (!unlocked) aria.push('未解锁');
+    btn.setAttribute('aria-label', aria.join('，'));
     btn.innerHTML = `<span class="lv-id">${lv.id}</span>`
       + `<span class="lv-stars">${starText}</span>`
-      + `<span class="lv-obj">${objectiveText(lv)}</span>`;
+      + `<span class="lv-obj">${objectiveHtml(lv)}</span>`
+      + (best > 0 ? `<span class="lv-best">最佳 ${best}</span>` : '')
+      + (!unlocked ? '<span class="lv-lock" aria-hidden="true">🔒</span>' : '');
     if (unlocked && !broken.includes(lv.id)) btn.addEventListener('click', () => emit('onStartLevel', lv.id));
     dom.levelsGrid.appendChild(btn);
   });
@@ -201,6 +237,14 @@ function renderPlay(state) {
   if (dom.playScore) dom.playScore.textContent = String(p.inLevelScore);
   if (dom.playCoins) dom.playCoins.textContent = String(state.save.coins);
   if (dom.playTarget) dom.playTarget.textContent = p.targetLabel;
+  const target = targetInfo(p.level);
+  if (dom.playTargetChip) {
+    dom.playTargetChip.innerHTML = target
+      ? `${shapeSvg(target.shape, target.color)}<span class="target-chip-text">${target.colorName}${target.shapeName}</span>`
+      : '';
+    dom.playTargetChip.classList.toggle('hidden', !target);
+    dom.playTargetChip.setAttribute('aria-label', target ? `目标颜色：${target.colorName}${target.shapeName}` : '');
+  }
   if (dom.playTargetLabel) dom.playTargetLabel.textContent = p.level.objectiveType === 'clear' ? '目标色' : '目标分';
   renderItemsBar(state);
   const modeItem = p.itemMode ? (state.itemsList || []).find((it) => it.id === p.itemMode) : null;
@@ -276,21 +320,30 @@ function renderItemsPage(state) {
 
 function renderResult(state) {
   const r = state.result;
-  if (!r) return;
-  if (dom.resultTitle) dom.resultTitle.textContent = r.won ? '通关成功' : '步数用尽';
-  if (dom.resultStars) {
-    dom.resultStars.innerHTML = r.won
-      ? '★'.repeat(r.stars) + '☆'.repeat(3 - r.stars)
-      : '☆☆☆';
+  if (!r) {
+    cancelResultAnimation();
+    resultAnimKey = null;
+    return;
   }
-  if (dom.resultScore) dom.resultScore.textContent = String(r.total);
+
+  const model = buildResultModel(r);
+  if (dom.resultTitle) dom.resultTitle.textContent = r.won ? '通关成功' : '步数用尽';
+  if (dom.resultGap) {
+    dom.resultGap.textContent = model.gapText;
+    dom.resultGap.classList.toggle('is-fail', !r.won);
+  }
   if (dom.resultSub) {
     const parts = [];
-    if (r.won) parts.push(`本关目标 ${r.level.scoreTarget} 分`);
+    if (r.won) {
+      const target = targetInfo(r.level);
+      parts.push(target
+        ? `目标色 ${targetChipHtml(r.level)} ${r.level.objectiveTarget} 个`
+        : `本关目标 ${r.level.scoreTarget} 分`);
+    }
     if (r.coinsGained) parts.push(`金币 +${r.coinsGained}${r.firstClear ? '（首次通关双倍）' : ''}`);
     if (r.isNewBest) parts.push('新纪录！');
     if (!r.won && r.coinsGained === 0) parts.push('未通关无金币奖励');
-    dom.resultSub.textContent = parts.join('　·　');
+    dom.resultSub.innerHTML = parts.join('　·　');
   }
   if (dom.resultNext) {
     dom.resultNext.disabled = !r.canNext;
@@ -305,6 +358,245 @@ function renderResult(state) {
     dom.resultSteps.disabled = !usable;
     dom.resultSteps.classList.toggle('hidden', r.won || !carried);
   }
+
+  layoutResultMarkers(model);
+  ensureResultStars();
+  if (state.page === 'result' && model.key !== resultAnimKey) {
+    resultAnimKey = model.key;
+    startResultAnimation(model);
+  } else if (!resultAnimRunning) {
+    applyResultFinal(model);
+  }
+}
+
+/**
+ * 结算进度模型：分数、1★/2★/3★ 线、历史最高线、下一档差距。
+ * clear 关在“目标达成但总分低于 scoreTarget”时仍保底 1★，
+ * 因此把 1★ 线画在本次得分处并标注“通关保底”，避免进度条与星级矛盾。
+ */
+function buildResultModel(r) {
+  const total = Math.max(0, Number(r.total) || 0);
+  const level = r.level || {};
+  const scoreTarget = Math.max(1, Number(level.scoreTarget) || 1);
+  const lines = STAR_THRESHOLDS.map((k, i) => ({
+    star: i + 1, value: Math.round(scoreTarget * k), guaranteed: false,
+  }));
+  if (r.won && total < lines[0].value) {
+    lines[0].value = total;
+    lines[0].guaranteed = true;
+  }
+  const previousBest = Math.max(0, Number(r.previousBest) || 0);
+  const maxValue = Math.max(lines[2].value, total, previousBest, 1);
+  const scaleMax = maxValue * 1.06;
+  const pct = (v) => Math.max(0, Math.min(100, (v / scaleMax) * 100));
+  const won = !!r.won;
+  const stars = won ? Math.max(1, Math.min(3, Number(r.stars) || 1)) : 0;
+  const inLevelScore = Math.max(0, Math.min(total, Number.isFinite(Number(r.inLevelScore)) ? Number(r.inLevelScore) : (won ? 0 : total)));
+  const moveBonus = Math.max(0, total - inLevelScore);
+
+  let gapText;
+  if (!won) {
+    gapText = level.objectiveType === 'clear'
+      ? '未过关：目标色未达标'
+      : `未过关 · 距 1★ 还差 ${Math.max(0, lines[0].value - total)} 分`;
+  } else if (stars >= 3) {
+    const over = total - lines[2].value;
+    gapText = over > 0 ? `已达成 3★ · 超出 3★线 ${over} 分` : '已达成 3★';
+  } else {
+    const next = lines[stars] || lines[2];
+    gapText = `距 ${stars + 1}★ 还差 ${Math.max(0, next.value - total)} 分`;
+  }
+
+  return {
+    total, lines, previousBest, scaleMax, pct, won, stars,
+    inLevelScore, moveBonus, gapText,
+    key: [level.id, total, won, stars, previousBest, inLevelScore, moveBonus].join('|'),
+  };
+}
+
+function layoutResultMarkers(model) {
+  const markers = [dom.resultMarker1, dom.resultMarker2, dom.resultMarker3];
+  model.lines.forEach((line, i) => {
+    const marker = markers[i];
+    if (!marker) return;
+    marker.style.left = `${model.pct(line.value)}%`;
+    marker.dataset.value = String(line.value);
+    marker.title = line.guaranteed ? `1★ 通关保底：${line.value} 分` : `${line.star}★ 线：${line.value} 分`;
+    marker.classList.toggle('is-guaranteed', !!line.guaranteed);
+    const label = marker.querySelector('.result-star-label');
+    if (label) label.textContent = line.guaranteed ? '1★ 保底' : `${line.star}★`;
+  });
+
+  if (dom.resultBestMarker && dom.resultBestLabel) {
+    if (model.previousBest > 0) {
+      dom.resultBestMarker.classList.remove('hidden');
+      dom.resultBestMarker.style.left = `${model.pct(model.previousBest)}%`;
+      if (!dom.resultBestMarker.classList.contains('is-passed')) {
+        dom.resultBestLabel.textContent = `历史最高 ${model.previousBest}`;
+      }
+    } else {
+      dom.resultBestMarker.classList.add('hidden');
+      dom.resultBestMarker.classList.remove('is-passed');
+      if (dom.resultBestLabel) dom.resultBestLabel.textContent = `历史最高 ${model.previousBest}`;
+    }
+  }
+
+  if (dom.resultProgress) {
+    const lineText = model.lines
+      .map((l) => `${l.star}★线 ${l.value}${l.guaranteed ? '（通关保底）' : ''}`)
+      .join('；');
+    dom.resultProgress.setAttribute('aria-label',
+      `最终得分 ${model.total}；${lineText}${model.previousBest > 0 ? `；历史最高 ${model.previousBest}` : ''}`);
+  }
+}
+
+function ensureResultStars() {
+  if (!dom.resultStars) return;
+  if (dom.resultStars.children.length !== 3) {
+    dom.resultStars.innerHTML = [1, 2, 3]
+      .map((i) => `<span class="result-star" data-star="${i}">★</span>`)
+      .join('');
+  }
+}
+
+function setResultStars(earned, popIndex = -1) {
+  ensureResultStars();
+  if (!dom.resultStars) return;
+  Array.from(dom.resultStars.children).forEach((el, i) => {
+    const on = i < earned;
+    el.classList.toggle('is-earned', on);
+    if (on && i === popIndex) {
+      el.classList.remove('is-pop');
+      void el.offsetWidth;
+      el.classList.add('is-pop');
+      resultTimers.push(setTimeout(() => el.classList.remove('is-pop'), 650));
+    }
+  });
+  dom.resultStars.setAttribute('aria-label', `${earned} 星`);
+}
+
+function updateResultVisual(shown, model) {
+  if (dom.resultScore) dom.resultScore.textContent = String(shown);
+  if (dom.resultTotal) dom.resultTotal.textContent = String(shown);
+  if (dom.resultBase) dom.resultBase.textContent = String(Math.round(model.inLevelScore * (model.total > 0 ? shown / model.total : 0)));
+  if (dom.resultBonus) dom.resultBonus.textContent = String(Math.max(0, shown - Math.round(model.inLevelScore * (model.total > 0 ? shown / model.total : 0))));
+  if (dom.resultFill) dom.resultFill.style.width = `${model.pct(shown)}%`;
+  if (dom.resultDot) {
+    dom.resultDot.style.left = `${model.pct(shown)}%`;
+    dom.resultDot.classList.toggle('is-visible', shown > 0);
+  }
+}
+
+function bumpResultScore() {
+  if (!dom.resultScore) return;
+  dom.resultScore.classList.remove('is-bump');
+  void dom.resultScore.offsetWidth;
+  dom.resultScore.classList.add('is-bump');
+  resultTimers.push(setTimeout(() => dom.resultScore && dom.resultScore.classList.remove('is-bump'), 400));
+}
+
+function startResultAnimation(model) {
+  cancelResultAnimation();
+  ensureResultStars();
+  if (prefersReducedMotion() || typeof globalThis.requestAnimationFrame !== 'function') {
+    applyResultFinal(model);
+    return;
+  }
+  resultAnimRunning = true;
+  setResultStars(0);
+  updateResultVisual(0, model);
+  const markers = [dom.resultMarker1, dom.resultMarker2, dom.resultMarker3];
+  markers.forEach((m) => { if (m) m.classList.remove('is-reached', 'is-pulse'); });
+  if (dom.resultBestMarker) dom.resultBestMarker.classList.remove('is-passed');
+  if (dom.resultBestMarker && model.previousBest > 0) dom.resultBestMarker.classList.remove('hidden');
+  if (dom.resultBestLabel && model.previousBest > 0) dom.resultBestLabel.textContent = `历史最高 ${model.previousBest}`;
+
+  let lastEarned = 0;
+  let bestPassed = false;
+  const start = (globalThis.performance && performance.now) ? performance.now() : Date.now();
+  const duration = 1200;
+  const tick = (now) => {
+    if (!resultAnimRunning) return;
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    const shown = Math.round(model.total * eased);
+    updateResultVisual(shown, model);
+
+    model.lines.forEach((line, i) => {
+      const m = markers[i];
+      if (!m) return;
+      if (shown >= line.value && !m.classList.contains('is-reached')) {
+        m.classList.add('is-reached');
+        if (model.won && i < model.stars) {
+          m.classList.remove('is-pulse');
+          void m.offsetWidth;
+          m.classList.add('is-pulse');
+          resultTimers.push(setTimeout(() => m.classList.remove('is-pulse'), 600));
+        }
+      }
+    });
+
+    const crossed = model.lines.filter((line) => shown >= line.value).length;
+    const earned = model.won ? Math.min(model.stars, crossed) : 0;
+    if (earned !== lastEarned) {
+      setResultStars(earned, earned - 1);
+      lastEarned = earned;
+      bumpResultScore();
+    }
+
+    if (model.previousBest > 0 && !bestPassed && model.total > model.previousBest && shown >= model.previousBest) {
+      bestPassed = true;
+      if (dom.resultBestMarker) dom.resultBestMarker.classList.add('is-passed');
+      if (dom.resultBestLabel) dom.resultBestLabel.textContent = `原最高 ${model.previousBest}（已超越）`;
+      bumpResultScore();
+    }
+
+    if (t < 1) {
+      resultRaf = globalThis.requestAnimationFrame(tick);
+      return;
+    }
+    resultAnimRunning = false;
+    applyResultFinal(model);
+  };
+  resultRaf = globalThis.requestAnimationFrame(tick);
+}
+
+function applyResultFinal(model) {
+  ensureResultStars();
+  setResultStars(model.stars);
+  updateResultVisual(model.total, model);
+  const markers = [dom.resultMarker1, dom.resultMarker2, dom.resultMarker3];
+  model.lines.forEach((line, i) => {
+    if (markers[i]) {
+      markers[i].classList.toggle('is-reached', model.total >= line.value);
+      markers[i].classList.remove('is-pulse');
+    }
+  });
+  if (dom.resultBestMarker && dom.resultBestLabel) {
+    if (model.previousBest > 0) {
+      dom.resultBestMarker.classList.remove('hidden');
+      dom.resultBestMarker.classList.toggle('is-passed', model.total > model.previousBest);
+      dom.resultBestLabel.textContent = model.total > model.previousBest
+        ? `原最高 ${model.previousBest}（已超越）`
+        : `历史最高 ${model.previousBest}`;
+    } else {
+      dom.resultBestMarker.classList.add('hidden');
+    }
+  }
+  resultAnimRunning = false;
+}
+
+function cancelResultAnimation() {
+  if (resultRaf && typeof globalThis.cancelAnimationFrame === 'function') globalThis.cancelAnimationFrame(resultRaf);
+  resultRaf = 0;
+  resultTimers.forEach((t) => clearTimeout(t));
+  resultTimers = [];
+  resultAnimRunning = false;
+}
+
+function prefersReducedMotion() {
+  return typeof window !== 'undefined' && window.matchMedia
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 function renderRank(state) {
@@ -433,14 +725,20 @@ function animateTiles(cells, kind, dur) {
     anim = {
       kind, dur, board, cells,
       draw: (t) => {
-        const e = kind === 'swap' ? easeOut(t) : Math.sin(Math.PI * t);
+        // 交换与弹回都从“另一格”回到“本格”：t=1 时偏移必须归零。
+        // 旧实现弹回用 sin(πt)，末帧又回到另一格，视觉上等于没弹回。
+        const e = easeOut(t);
         drawBoard(board, { offsetFor: (i) => {
           if (i !== cells[0] && i !== cells[1]) return null;
           const from = i === cells[0] ? cells[1] : cells[0];
-          return lerpCell(from, i, kind === 'swap' ? e : e);
+          return lerpCell(from, i, e);
         } });
       },
-      done: resolve,
+      done: () => {
+        // 动画最后一帧由 rAF 绘制；这里再兜底重绘一次稳定态，避免残留偏移。
+        drawBoard(board, {});
+        resolve();
+      },
     };
     requestFrame();
   });
@@ -978,9 +1276,50 @@ function countStars(save) {
   return Object.values(save.stars).reduce((a, b) => a + (Number(b) || 0), 0);
 }
 
-function objectiveText(lv) {
-  if (lv.objectiveType === 'clear') return `消除 ${lv.objectiveTarget} 个`;
-  return `${lv.scoreTarget} 分`;
+function objectiveHtml(lv) {
+  if (lv.objectiveType === 'clear') {
+    return `${targetChipHtml(lv)}<span class="lv-obj-text">${lv.objectiveTarget} 个</span>`;
+  }
+  return `<span class="lv-obj-text">${lv.scoreTarget} 分</span>`;
+}
+
+/* ---------- 目标颜色双编码（颜色 + 形状） ---------- */
+const COLOR_NAMES = ['红', '黄', '绿', '蓝', '紫', '粉'];
+const SHAPE_NAMES = ['圆', '方', '三角', '菱形', '五边形', '六边形'];
+
+function targetInfo(level) {
+  if (!level || level.objectiveType !== 'clear') return null;
+  const raw = Number(level.targetColor);
+  if (!Number.isInteger(raw) || raw < 0) return null;
+  const index = raw % CELL_COLORS.length;
+  return {
+    index,
+    color: CELL_COLORS[index],
+    colorName: COLOR_NAMES[index] || `色${index + 1}`,
+    shape: index % SHAPE_COUNT,
+    shapeName: SHAPE_NAMES[index % SHAPE_COUNT] || '形状',
+  };
+}
+
+function targetChipHtml(level, opts = {}) {
+  const t = targetInfo(level);
+  if (!t) return '';
+  const label = `${t.colorName}${t.shapeName}`;
+  const text = opts.text === false ? '' : `<span class="target-chip-text">${label}</span>`;
+  return `<span class="target-chip" role="img" title="目标：${label}" aria-label="目标：${label}">${shapeSvg(t.shape, t.color)}${text}</span>`;
+}
+
+function shapeSvg(shape, color) {
+  const stroke = ' stroke="rgba(255,255,255,0.75)" stroke-width="1"';
+  const shapes = [
+    `<circle cx="8" cy="8" r="6.4" fill="${color}"${stroke}/>`,
+    `<rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.6" fill="${color}"${stroke}/>`,
+    `<polygon points="8,1.4 14.9,13.9 1.1,13.9" fill="${color}"${stroke}/>`,
+    `<polygon points="8,1 15,8 8,15 1,8" fill="${color}"${stroke}/>`,
+    `<polygon points="8,1 14.7,5.9 12.2,14 3.8,14 1.3,5.9" fill="${color}"${stroke}/>`,
+    `<polygon points="8,1 13.7,4.3 13.7,11.7 8,15 2.3,11.7 2.3,4.3" fill="${color}"${stroke}/>`,
+  ];
+  return `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">${shapes[shape] || shapes[0]}</svg>`;
 }
 
 function isUnlocked(save, levelId) {
@@ -1000,7 +1339,7 @@ function escapeHtml(s) {
 }
 
 export const __internals = {
-  drawBoard, layoutAndDraw, CELL_COLORS, GUIDE_TEXT, showHint, clearHint,
+  drawBoard, layoutAndDraw, CELL_COLORS, GUIDE_TEXT, showHint, clearHint, targetInfo,
   /** 仅测试版使用：暴露渲染/输入状态，便于端到端断言 */
   getDebugFlags: () => ({ keyboardMode, cellSize, selection, cursor, inputLocked }),
 };
